@@ -1,17 +1,12 @@
 # ai_helper.py
 """
-AI-assisted field extraction via external LLM (Gemini / ChatGPT / Claude).
-The user copies a prompt, feeds it to the LLM along with the Ericsson TSSR,
-then pastes the JSON response back into the app.
+AI-assisted field extraction via external LLM.
+User copies prompt → feeds to Gemini → pastes JSON back.
 """
 from __future__ import annotations
 import json
 import re
 
-
-# ═════════════════════════════════════════════════════════════
-# The prompt — copy/paste friendly, strict JSON output
-# ═════════════════════════════════════════════════════════════
 
 EXTRACTION_PROMPT = """You are a telecom site survey analyst.
 
@@ -55,59 +50,42 @@ Now, here is the Ericsson TSSR content:
 """
 
 
-# ═════════════════════════════════════════════════════════════
-# Parsing the AI response
-# ═════════════════════════════════════════════════════════════
-
-# Fields we expect from the AI, with their type
 EXPECTED_FIELDS = {
-    "site_class":        "str",
-    "room_access":       "str",
-    "cabin_location":    "str",
-    "flood_history":     "str",
-    "hauling_remarks":   "str",
-    "site_profile":      "str",
-    "site_key_location": "str",
-    "site_owner":        "str",
-    "site_security":     "list",
-    "work_permit":       "str",
-    "access_requirement":"str",
-    "site_type":         "str",
-    "site_accessible":   "bool",
-    "no_bridge":         "str",
-    "foot_trail":        "str",
-    "bridge_ton":        "str",
-    "foot_bridge":       "str",
-    "distance_m":        "str",
-    "by_boat":           "str",
+    "site_class":         "str",
+    "room_access":        "str",
+    "cabin_location":     "str",
+    "flood_history":      "str",
+    "hauling_remarks":    "str",
+    "site_profile":       "str",
+    "site_key_location":  "str",
+    "site_owner":         "str",
+    "site_security":      "list",
+    "work_permit":        "str",
+    "access_requirement": "str",
+    "site_type":          "str",
+    "site_accessible":    "bool",
+    "no_bridge":          "str",
+    "foot_trail":         "str",
+    "bridge_ton":         "str",
+    "foot_bridge":        "str",
+    "distance_m":         "str",
+    "by_boat":            "str",
 }
 
 
 def extract_json_from_response(text: str) -> dict | None:
-    """
-    Robustly pull JSON out of an AI response.
-    Handles:
-      - Raw JSON
-      - ```json ... ``` fences
-      - ``` ... ``` fences
-      - Leading/trailing prose around JSON
-    """
+    """Robustly extract JSON from an AI response."""
     if not text:
         return None
-
     text = text.strip()
-
-    # Strip markdown fences if present
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
 
-    # Try direct parse first
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Try to find the first { ... } block
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         try:
@@ -119,39 +97,35 @@ def extract_json_from_response(text: str) -> dict | None:
 
 
 def validate_and_normalize(data: dict) -> tuple[dict, list[str]]:
-    """
-    Validate the AI JSON, coerce types, and return (clean_dict, warnings).
-    """
+    """Validate AI JSON, coerce types, return (clean, warnings)."""
     warnings = []
     clean = {}
 
     if not isinstance(data, dict):
         return {}, ["Response is not a JSON object."]
 
-    for key, expected_type in EXPECTED_FIELDS.items():
+    for key, expected in EXPECTED_FIELDS.items():
         val = data.get(key)
 
-        # Missing
         if val is None:
-            clean[key] = [] if expected_type == "list" else \
-                         False if expected_type == "bool" else ""
+            clean[key] = [] if expected == "list" else \
+                         False if expected == "bool" else ""
             warnings.append(f"Missing field: `{key}`")
             continue
 
-        # Type coercion
-        if expected_type == "str":
+        if expected == "str":
             clean[key] = str(val).strip()
 
-        elif expected_type == "list":
+        elif expected == "list":
             if isinstance(val, list):
-                clean[key] = [str(v).strip() for v in val]
+                clean[key] = [str(v).strip() for v in val if str(v).strip()]
             elif isinstance(val, str):
                 clean[key] = [val.strip()] if val.strip() else []
             else:
                 clean[key] = []
-                warnings.append(f"`{key}` should be a list.")
+                warnings.append(f"`{key}` expected a list.")
 
-        elif expected_type == "bool":
+        elif expected == "bool":
             if isinstance(val, bool):
                 clean[key] = val
             elif isinstance(val, str):
@@ -163,5 +137,4 @@ def validate_and_normalize(data: dict) -> tuple[dict, list[str]]:
 
 
 def build_prompt() -> str:
-    """Return the exact prompt string to show the user."""
     return EXTRACTION_PROMPT
