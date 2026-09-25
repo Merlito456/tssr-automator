@@ -14,6 +14,7 @@ TSSR Automator v0.9
 import shutil
 import tempfile
 import time
+import traceback          # ← added for the diagnostic
 import urllib.request
 from pathlib import Path
 
@@ -118,10 +119,6 @@ def save_upload(uploaded_file) -> str:
 
 def _osm_embed_html(lat: str, lon: str, height: int = 450,
                     zoom: int = 17) -> str:
-    """
-    OpenStreetMap embed via iframe. Free, no API key.
-    Uses a bbox around the point for the visible extent.
-    """
     lat_f = float(lat)
     lon_f = float(lon)
     delta = 0.003
@@ -142,7 +139,6 @@ def _osm_embed_html(lat: str, lon: str, height: int = 450,
 
 def _download_static_map(lat: str, lon: str, dest_path: str,
                          zoom: int = 17, size: str = "800x600") -> str | None:
-    """Download a static map PNG from OSM-based staticmap service."""
     try:
         url = (
             f"https://staticmap.openstreetmap.de/staticmap.php"
@@ -456,12 +452,33 @@ if st.session_state.site_data:
 # ═════════════════════════════════════════════════════════════
 # STEP 3.2 — AI Load Calculator (C7 block)
 # ═════════════════════════════════════════════════════════════
+# DEBUGGING VERSION — prints the loaded module path and public names
+# so we can see why `load_calc_page.render` is missing.
 
 if st.session_state.site_data:
     st.divider()
+
     try:
+        import importlib
         import load_calc_page
+        importlib.reload(load_calc_page)
+
+        st.caption(
+            f"🔧 `load_calc_page` loaded from: "
+            f"`{getattr(load_calc_page, '__file__', '?')}`"
+        )
+        public = [x for x in dir(load_calc_page) if not x.startswith("_")]
+        st.caption(f"🔧 public names: `{public}`")
+
+        if not hasattr(load_calc_page, "render"):
+            st.error(
+                "❌ `load_calc_page` has no `render` function. "
+                "The file on the server is stale or wrong."
+            )
+            st.stop()
+
         load_calc_page.render(ensure_workdir, persist)
+
     except ImportError as e:
         st.warning(
             f"⚠️ Load calculator module not available: {e}\n\n"
@@ -469,6 +486,10 @@ if st.session_state.site_data:
             "and `load_calc_render.py`, then place "
             "`data/load_calculation.xlsx`."
         )
+    except Exception as e:
+        st.error(f"❌ Load calculator crashed: {type(e).__name__}: {e}")
+        with st.expander("🔎 Full traceback", expanded=True):
+            st.code(traceback.format_exc())
 
 
 # ═════════════════════════════════════════════════════════════
@@ -499,7 +520,6 @@ if st.session_state.site_data:
             "💡 How to use",
         ])
 
-        # ─── Tab 1: OSM Map ───
         with tab_map:
             st.markdown("**Vicinity map preview**")
             st.caption(
@@ -507,10 +527,7 @@ if st.session_state.site_data:
                 "click 'Use as Vicinity Map' below to save a static snapshot."
             )
 
-            components.html(
-                _osm_embed_html(lat, lon, height=450),
-                height=470,
-            )
+            components.html(_osm_embed_html(lat, lon, height=450), height=470)
 
             col_a, col_b = st.columns([1, 1])
             with col_a:
@@ -522,10 +539,8 @@ if st.session_state.site_data:
                 ):
                     workdir = ensure_workdir()
                     dest = workdir / "uploads" / "vicinity_map_from_osm.png"
-
                     with st.spinner("Downloading static map…"):
                         result = _download_static_map(lat, lon, str(dest))
-
                     if result:
                         st.session_state.image_map["img_vicinity_map"] = result
                         persist()
@@ -544,7 +559,6 @@ if st.session_state.site_data:
                     f"#map=17/{lat}/{lon})"
                 )
 
-        # ─── Tab 2: Google Street View ───
         with tab_street:
             st.markdown("**Street View preview**")
             st.caption(
@@ -585,7 +599,6 @@ if st.session_state.site_data:
                     f"&viewpoint={lat},{lon})"
                 )
 
-        # ─── Tab 3: Instructions ───
         with tab_help:
             st.markdown("""
             ### How to capture maps and photos
@@ -623,7 +636,6 @@ if st.session_state.site_data:
             - Google Maps often has higher-resolution imagery for urban sites.
             """)
 
-        # ─── Quick actions ───
         st.markdown("---")
         st.markdown("**Quick actions:**")
         qc1, qc2, qc3 = st.columns(3)
