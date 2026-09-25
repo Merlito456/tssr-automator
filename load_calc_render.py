@@ -2,324 +2,212 @@
 """
 Fill load_calculation.xlsx (C7 block) and render it to a PNG.
 
-Merged-safe: writes to the top-left anchor of any merged range.
+The Excel template stores Jinja-style placeholders directly in the
+value cells, e.g. `{{max_modules}}`. This module scans EVERY cell of
+the target sheet and substitutes any `{{key}}` with the matching
+value from the AI-provided dict.
+
+Merged-safe: if the target cell is inside a merged range, writes to
+the top-left anchor.
 
 Renderer: Playwright + Chromium.
-(wkhtmltopdf is no longer used — it is not available on Debian trixie,
-the current Streamlit Cloud base image.)
-
-Playwright Chromium bootstrap:
-    Streamlit Cloud wipes ~/.cache/ms-playwright on every rebuild,
-    so we re-install Chromium on first use.
-
-Proposed load: always a single Nokia MF-2 OLT (fixed in load_calc_helper).
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.cell.cell import MergedCell
 
 from load_calc_helper import compute_sufficiency, NOKIA_MF2_LOAD
 
 
-SHEET_BY_INDEX = {
-    1: "RS1-computation",
-    2: "RS2-computation",
-    3: "RS3-computation (existing)",
-    4: "RS4-computation (existing)",
-}
+# ─────────────────────────────────────────────────────────────
+# Placeholder scan & replace
+# ─────────────────────────────────────────────────────────────
+
+PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+
+
+def _safe_set(ws, row: int, col: int, value):
+    """Write to (row, col). If the cell is a MergedCell, write to the
+    top-left anchor of its range instead."""
+    cell = ws.cell(row=row, column=col)
+    if not isinstance(cell, MergedCell):
+        cell.value = value
+        return
+    for mr in ws.merged_cells.ranges:
+        if mr.min_row <= row <= mr.max_row and mr.min_col <= col <= mr.max_col:
+            ws.cell(row=mr.min_row, column=mr.min_col).value = value
+            return
+    raise RuntimeError(f"Cannot write to {cell.coordinate}")
+
+
+def replace_placeholders(ws, values: dict) -> tuple[int, list[str]]:
+    """
+    Walk every cell in the sheet. For each cell whose value is
+    a string containing `{{key}}`:
+      - If the whole cell is exactly one placeholder -> write raw value
+      - Otherwise -> substitute inline, preserving surrounding text.
+    Returns (count_replaced, list_of_unmatched_keys).
+    """
+    replaced = 0
+    unmatched = []
+
+    for row in ws.iter_rows():
+        for cell in row:
+            v = cell.value
+            if not isinstance(v, str) or "{{" not in v:
+                continue
+
+            # Case 1: the entire cell is a single placeholder
+            whole = PLACEHOLDER_RE.fullmatch(v.strip())
+            if whole:
+                key = whole.group(1)
+                if key in values:
+                    _safe_set(ws, cell.row, cell.column, values[key])
+                    replaced += 1
+                else:
+                    unmatched.append(key)
+                continue
+
+            # Case 2: placeholders embedded in surrounding text
+            def sub(m):
+                nonlocal replaced, unmatched
+                key = m.group(1)
+                if key in values:
+                    replaced += 1
+                    return str(values[key])
+                unmatched.append(key)
+                return m.group(0)
+
+            new_text = PLACEHOLDER_RE.sub(sub, v)
+            if new_text != v:
+                _safe_set(ws, cell.row, cell.column, new_text)
+
+    return replaced, unmatched
 
 
 # ─────────────────────────────────────────────────────────────
-# Playwright browser bootstrap
+# Playwright bootstrap (unchanged)
 # ─────────────────────────────────────────────────────────────
 
 _PLAYWRIGHT_READY = False
 
 
 def _ensure_playwright_browser():
-    """
-    Ensure the Playwright Chromium binary is present.
-
-    Streamlit Cloud wipes ~/.cache/ms-playwright on every rebuild,
-    so we call `playwright install chromium` once per Python process.
-    Subsequent calls are no-ops (guarded by _PLAYWRIGHT_READY).
-    """
     global _PLAYWRIGHT_READY
     if _PLAYWRIGHT_READY:
         return
-
     cache_root = Path.home() / ".cache" / "ms-playwright"
-    already_installed = False
-
+    already = False
     if cache_root.exists():
         for d in cache_root.iterdir():
-            if not d.is_dir():
+            if not d.is_dir() or "chromium" not in d.name.lower():
                 continue
-            if "chromium" not in d.name.lower():
-                continue
-            # Look for either the headless shell or the full Chrome binary
-            candidates = (
-                list(d.rglob("chrome-headless-shell")) +
-                list(d.rglob("chrome")) +
-                list(d.rglob("headless_shell"))
-            )
-            if candidates:
-                already_installed = True
+            if (list(d.rglob("chrome-headless-shell"))
+                    or list(d.rglob("chrome"))
+                    or list(d.rglob("headless_shell"))):
+                already = True
                 break
-
-    if not already_installed:
-        # Prefer the system-installed `playwright` CLI, fall back to
-        # `python -m playwright`. `--with-deps` pulls the apt deps
-        # needed for headless Chromium.
-        cmd_candidates = [
-            ["playwright", "install", "--with-deps", "chromium"],
-            ["python", "-m", "playwright", "install", "--with-deps", "chromium"],
-        ]
-        installed_ok = False
-        for cmd in cmd_candidates:
+    if not already:
+        for cmd in (["playwright", "install", "--with-deps", "chromium"],
+                    ["python", "-m", "playwright", "install", "--with-deps", "chromium"]):
             try:
-                subprocess.run(
-                    cmd,
-                    check=True,
-                    timeout=600,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-                installed_ok = True
+                subprocess.run(cmd, check=True, timeout=600,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 break
             except FileNotFoundError:
                 continue
             except subprocess.CalledProcessError as e:
                 print(f"[playwright bootstrap] {cmd[0]} failed: {e}")
-                continue
-
-        if not installed_ok:
-            # Last resort: try without --with-deps (if system libs
-            # are already present via packages.txt)
-            try:
-                subprocess.run(
-                    ["python", "-m", "playwright", "install", "chromium"],
-                    check=True, timeout=600,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                )
-            except Exception as e:
-                print(f"[playwright bootstrap] final fallback failed: {e}")
-
     _PLAYWRIGHT_READY = True
-
-
-# ─────────────────────────────────────────────────────────────
-# Merged-safe cell writer
-# ─────────────────────────────────────────────────────────────
-
-def _safe_set(ws, row: int, col: int, value):
-    """
-    Write `value` at (row, col). If the target is a MergedCell,
-    walk to the top-left anchor of its merged range and write there.
-    """
-    cell = ws.cell(row=row, column=col)
-    if type(cell).__name__ != "MergedCell":
-        cell.value = value
-        return
-
-    for mr in ws.merged_cells.ranges:
-        if (mr.min_row <= row <= mr.max_row) and \
-           (mr.min_col <= col <= mr.max_col):
-            ws.cell(row=mr.min_row, column=mr.min_col).value = value
-            return
-
-    try:
-        cell.value = value
-    except AttributeError:
-        pass
 
 
 # ─────────────────────────────────────────────────────────────
 # Template filler
 # ─────────────────────────────────────────────────────────────
 
-def fill_template(
-    template_path: str,
-    out_path: str,
-    data: dict,
-    sheet_name: str,
-) -> str:
-    """Copy template → out_path, write values into the C7 block."""
+def fill_template(template_path: str, out_path: str,
+                  data: dict, sheet_name: str) -> str:
+    """
+    Fill `{{...}}` placeholders in the given sheet with values from `data`.
+    Additionally computes sufficiency values and exposes them under the
+    same placeholder convention.
+    """
     shutil.copy(template_path, out_path)
     wb = load_workbook(out_path)
 
     if sheet_name not in wb.sheetnames:
         raise ValueError(
-            f"Sheet '{sheet_name}' not found in workbook. "
-            f"Available: {wb.sheetnames}"
+            f"Sheet '{sheet_name}' not found. Available: {wb.sheetnames}"
         )
     ws = wb[sheet_name]
 
-    # ---- Find label cells ----
-    label_to_cell = _find_label_cells(ws)
+    # ── Build the substitution dict
+    values = dict(data)                      # AI-provided fields
+    values.pop("proposed_loads", None)       # not a scalar
 
-    def put(label: str, value, *, row_offset: int = 0, col_offset: int = 8):
-        """Write `value` `col_offset` columns right of the label."""
-        cell = label_to_cell.get(label)
-        if not cell:
-            return
-        _safe_set(ws, cell.row + row_offset, cell.column + col_offset, value)
+    # Expose proposed-load fields as `proposed_*` placeholders too
+    values["proposed_equipment"] = NOKIA_MF2_LOAD["equipment"]
+    values["proposed_power_w"]   = NOKIA_MF2_LOAD["power_w"]
+    values["proposed_current_a"] = NOKIA_MF2_LOAD["current_a"]
+    values["proposed_breaker_a"] = NOKIA_MF2_LOAD["breaker_a"]
 
-    # ---- C7.1 (existing rectifier) ----
-    put("1) EXISTING RECTIFIER SYSTEM BRAND - MODEL",
-        data["rectifier_brand"])
-    put("2) MAXIMUM RECTIFIER MODULES / INSTALLED",
-        data["max_modules"])
-    put("3) RECTIFIER MODULE RATING, WATTS / AMPS",
-        data["module_rating_w"])
-    put("4) BATTERY BRAND / VOLTAGE RATING",
-        f'{data["battery_brand"]} {data["battery_voltage"]}'.strip())
-    put("5) NUMBER OF BATTERIES in BANKS / CAPACITY per CELL (AH)",
-        f'{data["battery_banks"]} / {data["battery_capacity_ah"]}')
-    put("6) PRESENT LOAD READING, PANEL DISPLAY / CLAMP METER (A)",
-        data["present_load_a"])
-    put("7) RECTIFIER MODULES IN OPERATION",
-        data["modules_in_operation"])
-    put("8) ACTUAL FLOAT VOLTAGE (V)",
-        data["actual_float_voltage_v"])
-
-    # ---- C7.2 (proposed loads) — fixed Nokia MF-2, merged-safe ----
-    start_row = _find_first_load_row(ws)
-
-    # Write the single Nokia MF-2 row
-    _safe_set(ws, start_row, 1,  NOKIA_MF2_LOAD["load_no"])
-    _safe_set(ws, start_row, 3,  NOKIA_MF2_LOAD["equipment"])
-    _safe_set(ws, start_row, 12, NOKIA_MF2_LOAD["power_w"])
-    _safe_set(ws, start_row, 15, NOKIA_MF2_LOAD["current_a"])
-    _safe_set(ws, start_row, 21, NOKIA_MF2_LOAD["cable_awg"])
-    _safe_set(ws, start_row, 27, NOKIA_MF2_LOAD["breaker_a"])
-
-    # Clear rows 2–7 so no stale template data lingers
-    for r in range(start_row + 1, start_row + 7):
-        for col in (1, 3, 12, 15, 21, 27):
-            _safe_set(ws, r, col, "")
-
-    # ---- Computed block ----
+    # Compute sufficiency and expose it
     comp = compute_sufficiency(data)
+    for k, v in comp.items():
+        values[k] = v
 
-    _set_by_label(ws, label_to_cell, "Total Full Load Current",
-                  comp["total_full_load_a"])
-    _set_by_label(ws, label_to_cell, "Existing Rectifier Capacity:",
-                  comp["existing_rectifier_capacity_a"])
-    _set_by_label(ws, label_to_cell, "Existing Battery Capacity:",
-                  comp["existing_battery_capacity_ah"])
-    _set_by_label(ws, label_to_cell, "Available Rectifier Capacity =",
-                  comp["available_rectifier_capacity_a"])
-    _set_by_label(ws, label_to_cell, "Percent Utilization",
-                  comp["percent_utilization"])
-    _set_by_label(ws, label_to_cell, "BBUT =",
-                  comp["bbut_hours"])
+    # Convenience: expose module_rating_a (W / 48 V) — the template
+    # references this in the RECTIFIER MODULE RATING row.
+    w = data.get("module_rating_w") or 0
+    values["module_rating_a"] = round(w / 48.0, 2)
+
+    # ── Replace placeholders
+    replaced, unmatched = replace_placeholders(ws, values)
+    print(f"[fill_template] replaced {replaced} placeholders in {sheet_name!r}")
+    if unmatched:
+        print(f"[fill_template] ⚠ unmatched keys: {sorted(set(unmatched))}")
 
     wb.save(out_path)
     return out_path
 
 
 # ─────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────
-
-def _find_label_cells(ws) -> dict:
-    found = {}
-    for row in ws.iter_rows():
-        for cell in row:
-            if isinstance(cell.value, str):
-                k = cell.value.strip()
-                if k and k not in found:
-                    found[k] = cell
-    return found
-
-
-def _find_first_load_row(ws) -> int:
-    for row in ws.iter_rows():
-        for cell in row:
-            if isinstance(cell.value, str) and cell.value.strip() == "Load No":
-                return cell.row + 1
-    print("⚠️ 'Load No' header not found — defaulting to row 21.")
-    return 21
-
-
-def _set_by_label(ws, label_cells: dict, prefix: str, value):
-    for text, cell in label_cells.items():
-        if text.startswith(prefix):
-            _safe_set(ws, cell.row, cell.column + 1, value)
-            return
-
-
-# ─────────────────────────────────────────────────────────────
-# PNG rendering — Playwright only
+# PNG rendering (unchanged)
 # ─────────────────────────────────────────────────────────────
 
 def render_sheet_png(xlsx_path: str, sheet_name: str, out_png: str) -> str:
-    """
-    Render an XLSX sheet to a PNG using xlsx2html + Playwright.
-
-    wkhtmltopdf is NOT used — it is no longer available on Debian
-    trixie. Playwright + Chromium is the only renderer.
-    """
     xlsx_path = str(xlsx_path)
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
 
-    # 0) Ensure Chromium is installed (no-op after first call)
     _ensure_playwright_browser()
 
-    # 1) Build the HTML from the sheet
-    try:
-        from xlsx2html import xlsx2html
-    except ImportError as e:
-        raise RuntimeError(
-            "Missing dependency: xlsx2html. Add it to requirements.txt "
-            "and reboot the app."
-        ) from e
-
+    from xlsx2html import xlsx2html
     html_path = out_png.with_suffix(".html")
     with open(html_path, "w", encoding="utf-8") as f:
-        # NOTE: xlsx2html uses `sheet=`, NOT `sheet_name=`
-        xlsx2html(
-            xlsx_path,
-            sheet=sheet_name,
-            output=f,
-            locale="en_US",
-        )
+        xlsx2html(xlsx_path, sheet=sheet_name, output=f, locale="en_US")
 
-    # 2) Screenshot with Playwright
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as e:
-        raise RuntimeError(
-            "Playwright not installed. Add 'playwright' to requirements.txt "
-            "and reboot the app."
-        ) from e
-
+    from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-            ],
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
         )
         page = browser.new_page(viewport={"width": 1400, "height": 1300})
         page.goto(f"file://{html_path.resolve()}")
         page.wait_for_timeout(800)
         page.screenshot(
-            path=str(out_png),
-            full_page=False,
+            path=str(out_png), full_page=False,
             clip={"x": 0, "y": 0, "width": 1400, "height": 1300},
         )
         browser.close()
 
     if not out_png.exists() or out_png.stat().st_size < 1000:
         raise RuntimeError("Playwright did not produce a valid PNG.")
-
     return str(out_png)
