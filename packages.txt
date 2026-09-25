@@ -1,1 +1,3 @@
 libreoffice
+wkhtmltopdf
+poppler-utils
