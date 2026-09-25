@@ -4,7 +4,7 @@ TSSR Automator v0.8
 - Excel masterlist (auto-loaded)
 - AI-assisted field extraction via Gemini/ChatGPT
 - Ericsson TSSR PDF (image extraction)
-- Hardcoded work_permit + access_requirement from towercо rules
+- Hardcoded work_permit + access_requirement from towerco rules
 - Map + Street View capture (no API key)
 - Persistent state across refresh
 - Image grid with blue/black status indicators
@@ -120,7 +120,6 @@ def _osm_embed_html(lat: str, lon: str, height: int = 450,
     """
     lat_f = float(lat)
     lon_f = float(lon)
-    # ~500m bounding box around the marker
     delta = 0.003
     bbox = f"{lon_f - delta},{lat_f - delta},{lon_f + delta},{lat_f + delta}"
     return f"""
@@ -139,10 +138,7 @@ def _osm_embed_html(lat: str, lon: str, height: int = 450,
 
 def _download_static_map(lat: str, lon: str, dest_path: str,
                          zoom: int = 17, size: str = "800x600") -> str | None:
-    """
-    Download a static map PNG from OSM-based staticmap service.
-    Free, no API key. May be slow occasionally.
-    """
+    """Download a static map PNG from OSM-based staticmap service."""
     try:
         url = (
             f"https://staticmap.openstreetmap.de/staticmap.php"
@@ -158,7 +154,6 @@ def _download_static_map(lat: str, lon: str, dest_path: str,
         with urllib.request.urlopen(req, timeout=20) as resp:
             data = resp.read()
 
-        # Sanity check — make sure we got an image, not an error page
         if len(data) < 2000:
             print(f"Static map response too small: {len(data)} bytes")
             return None
@@ -427,8 +422,8 @@ if st.session_state.site_data:
 
     with st.expander("🔍 Preview merged site data", expanded=False):
         site = st.session_state.site_data
-        towercо = site.get("towerco", "")
-        permits = get_permits_for_towerco(towercо)
+        towerco_value = site.get("towerco", "")
+        permits = get_permits_for_towerco(towerco_value)
 
         display_fields = [
             ("Site Class",        site.get("site_class", "")),
@@ -527,7 +522,7 @@ if st.session_state.site_data:
                     f"#map=17/{lat}/{lon})"
                 )
 
-        # ─── Tab 2: Google Street View (link-only) ───
+        # ─── Tab 2: Google Street View ───
         with tab_street:
             st.markdown("**Street View preview**")
             st.caption(
@@ -536,7 +531,6 @@ if st.session_state.site_data:
                 "screenshot and paste it back into the app."
             )
 
-            # Google Maps embed via iframe (no API key needed for basic embed)
             gmaps_embed_url = (
                 f"https://maps.google.com/maps?q={lat},{lon}"
                 f"&t=k&z=17&output=embed"
@@ -607,7 +601,7 @@ if st.session_state.site_data:
             - Google Maps often has higher-resolution imagery for urban sites.
             """)
 
-        # ─── Quick action: pre-fill both map and screenshot slots ───
+        # ─── Quick actions ───
         st.markdown("---")
         st.markdown("**Quick actions:**")
         qc1, qc2, qc3 = st.columns(3)
