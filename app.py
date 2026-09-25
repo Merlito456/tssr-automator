@@ -468,7 +468,8 @@ if st.session_state.site_data:
         importlib.reload(load_calc_page)
 
         st.caption(
-            f"🔧 `load_calc_page` loaded from: `{getattr(load_calc_page, '__file__', '?')}`"
+            f"🔧 `load_calc_page` loaded from: "
+            f"`{getattr(load_calc_page, '__file__', '?')}`"
         )
         public = [x for x in dir(load_calc_page) if not x.startswith("_")]
         st.caption(f"🔧 public names: `{public}`")
@@ -894,8 +895,8 @@ if st.session_state.site_data:
             use_container_width=True,
         )
 
-# ═════════════════════════════════════════════════════════════
-# Sidebar
+
+# ═════════════════════════════════════════════════════════════# Sidebar
 # ═════════════════════════════════════════════════════════════
 
 with st.sidebar:
