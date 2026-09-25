@@ -4,3 +4,6 @@ python-docx
 docxtpl
 Pillow
 openpyxl
+pandas
+xlsx2html
+playwright
