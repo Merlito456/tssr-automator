@@ -23,6 +23,14 @@ RS_OPTIONS = {
     "RS4 — Rectifier 4":       "RS4-computation (existing)",
 }
 
+# Short labels used inside the AI prompt ("RS1", "RS2", ...)
+RS_SHORT = {
+    "RS1 — Rectifier 1": "RS1",
+    "RS2 — Rectifier 2": "RS2",
+    "RS3 — Rectifier 3": "RS3",
+    "RS4 — Rectifier 4": "RS4",
+}
+
 SLOT_BY_RS = {
     "RS1 — Rectifier 1": "RS1_load_calc_img",
     "RS2 — Rectifier 2": "RS2_load_calc_img",
@@ -46,11 +54,12 @@ def render(ensure_workdir, persist) -> None:
         key="load_calc_rs",
     )
     sheet_name = RS_OPTIONS[rs_label]
-    st.caption(f"→ Will write to sheet `{sheet_name}`.")
+    rs_short = RS_SHORT.get(rs_label, "EXISTING")
+    st.caption(f"→ Will write to sheet `{sheet_name}` (extracting **{rs_short}**).")
 
-    # 2) Prompt
+    # 2) Prompt — customized so the AI extracts the right rectifier
     with st.expander("📋 Step 1 — Copy this prompt", expanded=False):
-        st.code(lch.build_prompt(), language="text")
+        st.code(lch.build_prompt(rs_short), language="text")
 
     # 3) Paste JSON
     with st.expander("📥 Step 2 — Paste AI JSON response", expanded=True):
@@ -83,15 +92,22 @@ def render(ensure_workdir, persist) -> None:
                         "modules_in_operation", "actual_float_voltage_v",
                     ):
                         site[k] = clean.get(k, "")
+
+                    # Computed sufficiency fields (dynamic voltage)
                     comp = lch.compute_sufficiency(clean)
                     for k in ("existing_rectifier_capacity_a",
                               "existing_battery_capacity_ah",
                               "total_full_load_a",
                               "available_rectifier_capacity_a",
-                              "percent_utilization", "bbut_hours"):
+                              "percent_utilization", "bbut_hours",
+                              "system_voltage_v"):
                         site[k] = comp.get(k, 0)
+
+                    # module_rating_a uses the same dynamic voltage
+                    voltage = clean.get("battery_voltage") or 48
                     site["module_rating_a"] = round(
-                        (clean.get("module_rating_w") or 0) / 48.0, 2)
+                        (clean.get("module_rating_w") or 0) / voltage, 2
+                    )
                     st.session_state.site_data = site
 
                     if warnings:
