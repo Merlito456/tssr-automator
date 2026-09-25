@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    margin: 0;
+    font-family: -apple-system, system-ui, sans-serif;
+    background: transparent;
+  }
+  .container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .paste-area {
+    border: 2px dashed #888;
+    border-radius: 8px;
+    padding: 24px;
+    text-align: center;
+    cursor: pointer;
+    background: #fafafa;
+    transition: all 0.15s;
+    min-height: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #666;
+    font-size: 14px;
+  }
+  .paste-area:focus {
+    outline: none;
+    border-color: #0B5FFF;
+    background: #f0f7ff;
+    color: #0B5FFF;
+  }
+  .paste-area.dragover {
+    border-color: #0B5FFF;
+    background: #e6f0ff;
+  }
+  .paste-area.has-image {
+    border-style: solid;
+    border-color: #0B5FFF;
+    padding: 8px;
+    background: #fff;
+  }
+  .preview {
+    max-width: 100%;
+    max-height: 300px;
+    border-radius: 4px;
+    display: block;
+    margin: 0 auto;
+  }
+  .hint {
+    font-size: 12px;
+    color: #888;
+    text-align: center;
+  }
+  .actions {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+  }
+  button {
+    padding: 6px 14px;
+    border: 1px solid #ccc;
+    background: #fff;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  button:hover {
+    background: #f5f5f5;
+  }
+  button.primary {
+    background: #0B5FFF;
+    color: white;
+    border-color: #0B5FFF;
+  }
+  button.primary:hover {
+    background: #0847c4;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div id="paste-area" class="paste-area" tabindex="0">
+    <div>
+      <div style="font-size: 24px;">📋</div>
+      <div><strong>Click here</strong>, then press <kbd>Ctrl+V</kbd></div>
+      <div class="hint">or drag & drop an image onto this box</div>
+    </div>
+  </div>
+
+  <div class="actions" id="actions" style="display:none;">
+    <button id="clear-btn">🗑 Clear</button>
+    <button id="save-btn" class="primary">✓ Use this image</button>
+  </div>
+</div>
+
+<script>
+// Streamlit component API
+function sendMessage(type, data) {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: type,
+    ...data
+  }, "*");
+}
+
+// Initialize
+sendMessage("streamlit:componentReady", { apiVersion: 1 });
+sendMessage("streamlit:setFrameHeight", { height: 400 });
+
+// Elements
+const pasteArea = document.getElementById("paste-area");
+const actions = document.getElementById("actions");
+let currentImage = null; // { dataUrl, mime, bytes }
+
+// Focus on load
+pasteArea.focus();
+
+// Click to focus
+pasteArea.addEventListener("click", () => {
+  pasteArea.focus();
+});
+
+// Paste handler
+pasteArea.addEventListener("paste", async (e) => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+
+  for (const item of items) {
+    if (item.type.startsWith("image/")) {
+      e.preventDefault();
+      const blob = item.getAsFile();
+      await handleImageFile(blob);
+      return;
+    }
+  }
+
+  // No image found
+  pasteArea.innerHTML = `
+    <div>
+      <div style="font-size: 24px;">⚠️</div>
+      <div>No image found in clipboard</div>
+      <div class="hint">Try copying a screenshot first</div>
+    </div>
+  `;
+  setTimeout(resetUI, 2000);
+});
+
+// Drag & drop
+pasteArea.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  pasteArea.classList.add("dragover");
+});
+pasteArea.addEventListener("dragleave", () => {
+  pasteArea.classList.remove("dragover");
+});
+pasteArea.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  pasteArea.classList.remove("dragover");
+  const file = e.dataTransfer?.files?.[0];
+  if (file && file.type.startsWith("image/")) {
+    await handleImageFile(file);
+  }
+});
+
+// Handle image file
+async function handleImageFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result;
+    currentImage = {
+      dataUrl: dataUrl,
+      mime: file.type,
+      size: file.size,
+    };
+
+    // Show preview
+    pasteArea.classList.add("has-image");
+    pasteArea.innerHTML = `<img src="${dataUrl}" class="preview" />`;
+    actions.style.display = "flex";
+
+    // Auto-resize the iframe
+    sendMessage("streamlit:setFrameHeight", {
+      height: Math.min(400 + pasteArea.offsetHeight, 700)
+    });
+  };
+  reader.readAsDataURL(file);
+}
+
+// Clear button
+document.getElementById("clear-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  currentImage = null;
+  resetUI();
+  sendMessage("streamlit:setComponentValue", { value: null });
+});
+
+// Save/use button
+document.getElementById("save-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!currentImage) return;
+
+  // Extract just the base64 part
+  const base64 = currentImage.dataUrl.split(",")[1];
+
+  sendMessage("streamlit:setComponentValue", {
+    value: {
+      base64: base64,
+      mime: currentImage.mime,
+      size: currentImage.size,
+    }
+  });
+
+  // Visual feedback
+  pasteArea.innerHTML = `
+    <div>
+      <div style="font-size: 24px;">✅</div>
+      <div>Image sent to app</div>
+    </div>
+  `;
+  actions.style.display = "none";
+});
+
+function resetUI() {
+  pasteArea.classList.remove("has-image");
+  pasteArea.innerHTML = `
+    <div>
+      <div style="font-size: 24px;">📋</div>
+      <div><strong>Click here</strong>, then press <kbd>Ctrl+V</kbd></div>
+      <div class="hint">or drag & drop an image onto this box</div>
+    </div>
+  `;
+  actions.style.display = "none";
+}
+</script>
+</body>
+</html>
