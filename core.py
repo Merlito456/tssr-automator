@@ -10,8 +10,9 @@ User uploads     -> optional image overrides
 Work permit + Access requirement are HARDCODED from towercо rules
 (see permit_rules.py) - not from AI.
 
-Images are scaled proportionally to their target width.
-No cropping — content stays intact.
+Most images are STRETCHED to fill their box (cropped to match the
+cell's aspect ratio). Load schedule and load calculation images are
+resized proportionally to preserve numeric data.
 """
 
 from __future__ import annotations
@@ -127,6 +128,51 @@ def make_grid(images: list[str], max_width: int = 1200,
     out = Path(images[0]).parent / "_grid.jpg"
     canvas.save(out, quality=85)
     return str(out)
+
+
+# =============================================================
+# 3b. Crop-to-aspect helper (for stretch-to-box images)
+# =============================================================
+
+def crop_to_aspect(src_path: str, dest_path: str, target_aspect: float) -> str:
+    """
+    Crop an image to match the target aspect ratio (width / height).
+    Center-crops. Used for STRETCH-to-box images.
+    """
+    try:
+        img = Image.open(src_path).convert("RGB")
+    except Exception as e:
+        print(f"[crop_to_aspect] Could not open {src_path}: {e}")
+        return src_path
+
+    w, h = img.size
+    if h == 0 or w == 0:
+        return src_path
+
+    current_aspect = w / h
+
+    # Already close — no crop needed
+    if abs(current_aspect - target_aspect) < 0.02:
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        img.save(dest, quality=88)
+        return str(dest)
+
+    if current_aspect > target_aspect:
+        # Image too wide → crop left/right
+        new_w = int(h * target_aspect)
+        x_offset = (w - new_w) // 2
+        img = img.crop((x_offset, 0, x_offset + new_w, h))
+    else:
+        # Image too tall → crop top/bottom
+        new_h = int(w / target_aspect)
+        y_offset = (h - new_h) // 2
+        img = img.crop((0, y_offset, w, y_offset + new_h))
+
+    dest = Path(dest_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    img.save(dest, quality=88)
+    return str(dest)
 
 
 # =============================================================
@@ -379,14 +425,14 @@ def build_site_remarks(site: dict, ericsson: dict) -> str:
 # 8. Generate the final DOCX
 # =============================================================
 
-# Target image widths (mm) — tuned to fit their template cells
+# Target image widths (mm) — all slots
 IMAGE_WIDTHS_MM = {
     # Full width
     "img_vicinity_map":            Mm(170),
     "equipment_room_layout_img":   Mm(170),
     "equipment_cable_routing_img": Mm(170),
 
-    # RS load schedules
+    # RS load schedules (proportional, no crop)
     "RS1_load_sched_img":          Mm(130),
     "RS1_load_calc_img":           Mm(130),
     "RS2_load_sched_img":          Mm(130),
@@ -409,6 +455,35 @@ IMAGE_WIDTHS_MM = {
 }
 
 
+# Aspect ratios for STRETCH-to-box slots.
+# Slots NOT in this dict get proportional resize only (no crop).
+# Match these to the actual Word cell width/height in your template.
+STRETCH_ASPECTS = {
+    # Full width — cell height ~100mm
+    "img_vicinity_map":            1.70,   # 170 / 100
+    "equipment_room_layout_img":   1.70,
+    "equipment_cable_routing_img": 1.70,
+
+    # Half width — cell height ~60mm
+    "img_site_photo_1":            1.40,   # 85 / 60
+    "img_site_photo_2":            1.40,
+    "img_site_photo_3":            1.40,
+    "img_site_photo_4":            1.40,
+    "img_olt_existing":            1.40,
+    "img_olt_proposed":            1.40,
+    "RS1_tapping_img":             1.40,
+    "RS2_tapping_img":             1.40,
+
+    # Third width — cell height ~40mm
+    "transport_existing_1":        1.40,
+    "transport_existing_2":        1.40,
+    "transport_existing_3":        1.40,
+
+    # RS1/RS2 load sched + load calc intentionally NOT listed here.
+    # They render proportionally — no crop — to preserve numeric data.
+}
+
+
 def generate_nokia_tssr(
     template_path: str,
     output_path: str,
@@ -418,22 +493,40 @@ def generate_nokia_tssr(
     """
     Render the Nokia template with the given context.
 
-    Images are scaled proportionally to their target width.
-    Word preserves the aspect ratio automatically — no cropping.
-    Centered alignment comes from the template's paragraph settings.
+    - Most images are STRETCHED to fill their box (cropped to match
+      the cell's aspect ratio, then inserted at the cell width).
+    - Load schedule and load calculation images are RESIZED
+      proportionally — no crop — so numeric tables stay intact.
     """
     doc = DocxTemplate(template_path)
     widths = {**IMAGE_WIDTHS_MM, **(image_widths or {})}
 
+    # Directory for stretched (cropped) images
+    stretched_dir = Path(output_path).parent / "_stretched"
+
     rendered = {}
     for key, val in context.items():
-        if isinstance(val, str) and val and Path(val).exists() and key in widths:
-            try:
+        # Only process string paths that exist and have a target width
+        if not (isinstance(val, str) and val and Path(val).exists() and key in widths):
+            rendered[key] = val
+            continue
+
+        try:
+            aspect = STRETCH_ASPECTS.get(key)
+
+            if aspect:
+                # STRETCH mode: crop to aspect, then insert
+                stretched_dir.mkdir(parents=True, exist_ok=True)
+                dest = stretched_dir / f"{key}_stretch.jpg"
+                crop_to_aspect(val, str(dest), aspect)
+                rendered[key] = InlineImage(doc, str(dest), width=widths[key])
+            else:
+                # RESIZE mode: proportional, no crop
                 rendered[key] = InlineImage(doc, val, width=widths[key])
-                continue
-            except Exception as e:
-                print(f"[generate_nokia_tssr] Image failed for {key}: {e}")
-        rendered[key] = val
+
+        except Exception as e:
+            print(f"[generate_nokia_tssr] Image failed for {key}: {e}")
+            rendered[key] = val
 
     doc.render(rendered)
     doc.save(output_path)
