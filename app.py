@@ -1,8 +1,7 @@
 # app.py
 """
-TSSR Automator v0.3 — Persistent state + gallery picker + paste support.
+TSSR Automator v0.4 — Persistent state + gallery picker + real Ctrl+V paste.
 """
-import base64
 import shutil
 import tempfile
 import time
@@ -13,6 +12,7 @@ import streamlit as st
 import core
 import state_manager as sm
 from excel_loader import SiteMasterlist
+from components.paste_image import paste_image, save_pasted_image
 
 
 # ═════════════════════════════════════════════════════════════
@@ -36,7 +36,7 @@ st.set_page_config(
 
 
 # ═════════════════════════════════════════════════════════════
-# Restore persisted state on startup
+# Session state
 # ═════════════════════════════════════════════════════════════
 
 DEFAULTS = {
@@ -51,11 +51,9 @@ DEFAULTS = {
     "selected_plaid": "",
 }
 
-# First: set defaults for any missing keys
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
 
-# Then: overlay persisted state on top (only once per app boot)
 if "_restored" not in st.session_state:
     saved = sm.load_state()
     for k, v in saved.items():
@@ -77,24 +75,31 @@ def persist():
 
 
 def reset_to_new_site():
-    """Clear everything except masterlist and template paths."""
+    """Clear everything except masterlist."""
     if st.session_state.workdir and Path(st.session_state.workdir).exists():
         shutil.rmtree(st.session_state.workdir, ignore_errors=True)
     sm.clear_state()
 
     for k, v in DEFAULTS.items():
-        if k in ("masterlist",):
-            continue  # keep the loaded masterlist
-        st.session_state[k] = v if not isinstance(v, (list, dict)) else type(v)()
+        if k == "masterlist":
+            continue
+        if isinstance(v, (list, dict)):
+            st.session_state[k] = type(v)()
+        else:
+            st.session_state[k] = v
 
     st.session_state["_restored"] = True
 
 
-def save_upload(uploaded_file) -> str:
+def ensure_workdir() -> Path:
     workdir = Path(st.session_state.workdir or tempfile.mkdtemp(prefix="tssr_"))
     st.session_state.workdir = str(workdir)
     sm.save_workdir(str(workdir))
+    return workdir
 
+
+def save_upload(uploaded_file) -> str:
+    workdir = ensure_workdir()
     uploads = workdir / "uploads"
     uploads.mkdir(parents=True, exist_ok=True)
     dest = uploads / uploaded_file.name
@@ -102,70 +107,41 @@ def save_upload(uploaded_file) -> str:
     return str(dest)
 
 
-def save_pasted_b64(b64_string: str, slot: str) -> str | None:
-    """Decode base64 image and save to workdir. Returns path or None."""
-    try:
-        # Strip data URL prefix if present
-        if "," in b64_string:
-            b64_string = b64_string.split(",", 1)[1]
-        raw = base64.b64decode(b64_string)
-
-        workdir = Path(st.session_state.workdir or tempfile.mkdtemp(prefix="tssr_"))
-        st.session_state.workdir = str(workdir)
-        sm.save_workdir(str(workdir))
-
-        uploads = workdir / "uploads"
-        uploads.mkdir(parents=True, exist_ok=True)
-        dest = uploads / f"{slot}_{int(time.time())}.png"
-        dest.write_bytes(raw)
-        return str(dest)
-    except Exception as e:
-        st.error(f"Failed to decode pasted image: {e}")
-        return None
-
-
 # ═════════════════════════════════════════════════════════════
-# Gallery picker helper
+# Gallery picker
 # ═════════════════════════════════════════════════════════════
 
 def render_gallery(slot: str, label: str, extracted: list[str]):
-    """Thumbnail gallery picker for an image slot."""
-    st.markdown(f"**{label}**")
-
     current = st.session_state.image_map.get(slot, "")
 
-    # Preview current selection
-    if current and Path(current).exists():
-        st.image(current, use_container_width=True, caption="Current")
+    if not extracted:
+        st.caption("_No extracted images yet. Upload an Ericsson TSSR first._")
+        return
 
-    # Gallery
-    if extracted:
-        st.caption(f"Click a thumbnail to select ({len(extracted)} available)")
-        COLS = 4
-        rows = (len(extracted) + COLS - 1) // COLS
+    st.caption(f"{len(extracted)} images available — click Select to use one.")
+    COLS = 4
+    rows = (len(extracted) + COLS - 1) // COLS
 
-        for r in range(rows):
-            cols = st.columns(COLS)
-            for c in range(COLS):
-                idx = r * COLS + c
-                if idx >= len(extracted):
-                    break
-                img_path = extracted[idx]
-                is_selected = current == img_path
+    for r in range(rows):
+        cols = st.columns(COLS)
+        for c in range(COLS):
+            idx = r * COLS + c
+            if idx >= len(extracted):
+                break
+            img_path = extracted[idx]
+            is_selected = current == img_path
 
-                with cols[c]:
-                    st.image(img_path, use_container_width=True)
-                    if st.button(
-                        "✓" if is_selected else "Select",
-                        key=f"pick_{slot}_{idx}",
-                        use_container_width=True,
-                        type="primary" if is_selected else "secondary",
-                    ):
-                        st.session_state.image_map[slot] = img_path
-                        persist()
-                        st.rerun()
-    else:
-        st.caption("_No extracted images yet._")
+            with cols[c]:
+                st.image(img_path, use_container_width=True)
+                if st.button(
+                    "✓ Selected" if is_selected else "Select",
+                    key=f"pick_{slot}_{idx}",
+                    use_container_width=True,
+                    type="primary" if is_selected else "secondary",
+                ):
+                    st.session_state.image_map[slot] = img_path
+                    persist()
+                    st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -243,13 +219,13 @@ if st.session_state.site_data:
     site = st.session_state.site_data
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.text_input("Site ID", site.get("site_id", ""), disabled=True, key="disp_site_id")
+        st.text_input("Site ID",   site.get("site_id", ""),   disabled=True, key="disp_site_id")
         st.text_input("Site Name", site.get("site_name", ""), disabled=True, key="disp_site_name")
     with c2:
-        st.text_input("Region", site.get("region", ""), disabled=True, key="disp_region")
-        st.text_input("Towerco", site.get("towerco", ""), disabled=True, key="disp_towerco")
+        st.text_input("Region",    site.get("region", ""),    disabled=True, key="disp_region")
+        st.text_input("Towerco",   site.get("towerco", ""),   disabled=True, key="disp_towerco")
     with c3:
-        st.text_input("FO Name", site.get("fo_name", ""), disabled=True, key="disp_fo_name")
+        st.text_input("FO Name",   site.get("fo_name", ""),   disabled=True, key="disp_fo_name")
         st.text_input("FO Mobile", site.get("fo_mobile", ""), disabled=True, key="disp_fo_mobile")
 
 
@@ -269,10 +245,7 @@ if st.session_state.site_data:
         )
 
         if uploaded_pdf:
-            workdir = Path(st.session_state.workdir or tempfile.mkdtemp(prefix="tssr_"))
-            st.session_state.workdir = str(workdir)
-            sm.save_workdir(str(workdir))
-
+            workdir = ensure_workdir()
             pdf_path = workdir / uploaded_pdf.name
             pdf_path.write_bytes(uploaded_pdf.getbuffer())
 
@@ -308,6 +281,7 @@ if st.session_state.site_data:
 if st.session_state.site_data:
     st.divider()
     st.subheader("4 · Images")
+    st.caption("For each slot: upload, paste (Ctrl+V), or pick from TSSR extracts.")
 
     extracted = st.session_state.ericsson_images
 
@@ -336,10 +310,24 @@ if st.session_state.site_data:
 
     for tab, (slot, label) in zip(tabs, IMAGE_SLOTS):
         with tab:
-            # ─── Three input methods ───
+            # ─── Current selection preview ───
+            current = st.session_state.image_map.get(slot, "")
+            if current and Path(current).exists():
+                st.markdown("**Current selection:**")
+                pcol1, pcol2 = st.columns([3, 1])
+                with pcol1:
+                    st.image(current, use_container_width=True)
+                with pcol2:
+                    if st.button("🗑 Remove", key=f"del_{slot}", use_container_width=True):
+                        st.session_state.image_map.pop(slot, None)
+                        persist()
+                        st.rerun()
+                st.markdown("---")
+
+            # ─── Input method ───
             method = st.radio(
                 "How to provide this image:",
-                ["📁 Upload", "📋 Paste (base64)", "🖼 Pick from TSSR"],
+                ["📁 Upload", "📋 Paste (Ctrl+V)", "🖼 Pick from TSSR"],
                 key=f"method_{slot}",
                 horizontal=True,
                 label_visibility="collapsed",
@@ -358,39 +346,28 @@ if st.session_state.site_data:
                     persist()
                     st.rerun()
 
-            elif method == "📋 Paste (base64)":
+            elif method == "📋 Paste (Ctrl+V)":
                 st.caption(
-                    "Paste base64 string below. "
-                    "Use an online encoder like base64-image.de if needed."
+                    "**Click the dashed box below, then press Ctrl+V** "
+                    "to paste a screenshot. Alternatively, drag an image file onto it."
                 )
-                b64 = st.text_area(
-                    "Base64 data",
-                    key=f"b64_{slot}",
-                    height=100,
-                    label_visibility="collapsed",
-                )
-                if st.button("Save pasted image", key=f"save_{slot}"):
-                    if b64.strip():
-                        path = save_pasted_b64(b64.strip(), slot)
-                        if path:
-                            st.session_state.image_map[slot] = path
-                            persist()
-                            st.success("✅ Saved")
-                            st.rerun()
+                result = paste_image(key=f"paste_{slot}")
+
+                if result:
+                    # Only save once per unique paste
+                    cache_key = f"_pasted_{slot}_{result.get('size', 0)}"
+                    if cache_key not in st.session_state:
+                        workdir = ensure_workdir()
+                        ext = result["mime"].split("/")[-1].replace("jpeg", "jpg")
+                        dest = workdir / "uploads" / f"{slot}_{int(time.time())}.{ext}"
+                        save_pasted_image(result, str(dest))
+                        st.session_state.image_map[slot] = str(dest)
+                        st.session_state[cache_key] = True
+                        persist()
+                        st.rerun()
 
             elif method == "🖼 Pick from TSSR":
                 render_gallery(slot, label, extracted)
-
-            # Preview current
-            current = st.session_state.image_map.get(slot, "")
-            if current and Path(current).exists():
-                st.markdown("**Current selection:**")
-                st.image(current, use_container_width=True)
-
-                if st.button("🗑 Remove", key=f"del_{slot}"):
-                    st.session_state.image_map.pop(slot, None)
-                    persist()
-                    st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -430,12 +407,13 @@ if st.session_state.site_data:
                 key=f"input_{key}_qty",
                 label_visibility="collapsed",
             )
-        if unit_val != st.session_state.materials.get(f"{key}_unit"):
-            st.session_state.materials[f"{key}_unit"] = unit_val
-            persist()
-        if qty_val != st.session_state.materials.get(f"{key}_qty"):
-            st.session_state.materials[f"{key}_qty"] = qty_val
-            persist()
+        st.session_state.materials[f"{key}_unit"] = unit_val
+        st.session_state.materials[f"{key}_qty"]  = qty_val
+
+    # Persist on any change
+    if st.button("💾 Save materials", key="save_materials"):
+        persist()
+        st.success("Saved")
 
 
 # ═════════════════════════════════════════════════════════════
@@ -451,11 +429,7 @@ if st.session_state.site_data:
         st.stop()
 
     if st.button("⚙️ Generate DOCX", type="primary", use_container_width=True):
-        if not st.session_state.workdir:
-            st.session_state.workdir = tempfile.mkdtemp(prefix="tssr_")
-            sm.save_workdir(st.session_state.workdir)
-
-        workdir = Path(st.session_state.workdir)
+        workdir = ensure_workdir()
 
         all_assets = {
             **st.session_state.image_map,
@@ -516,26 +490,24 @@ with st.sidebar:
         "1. Masterlist auto-loads\n"
         "2. Select a PLAID\n"
         "3. Upload Ericsson TSSR\n"
-        "4. For each image: upload, paste, or pick from TSSR\n"
+        "4. Per image: upload, paste, or pick\n"
         "5. Fill materials\n"
         "6. Generate & download"
     )
 
     st.markdown("---")
-    st.caption("v0.3 · Persistent state · Gallery picker")
+    st.caption("v0.4 · Ctrl+V paste enabled")
 
-    # State info
     if st.session_state.get("selected_plaid"):
         st.success(f"Working on: **{st.session_state.selected_plaid}**")
 
-    # Manual persist button
     if st.button("💾 Save state now", use_container_width=True):
         persist()
         st.success("Saved")
 
-    # Debug
     with st.expander("🔍 Session info"):
         st.write("**Workdir:**", st.session_state.workdir)
         st.write("**Selected PLAID:**", st.session_state.selected_plaid)
         st.write("**Images set:**", len(st.session_state.image_map))
         st.write("**Materials set:**", len(st.session_state.materials))
+        st.write("**Extracted imgs:**", len(st.session_state.ericsson_images))
