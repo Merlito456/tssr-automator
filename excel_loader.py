@@ -18,11 +18,11 @@ Columns (A–W):
     J  LATITUDE
     K  LONGITUDE
     L  SITE_ADD
-    M  ASSIGN_HUB
+    M  ASSIGN_HUB                ← site_key_location source
     N  TOWERCO
     O  NEW ASSIGN_AREA
     P  NEW ASSIGN_AREA NAME
-    Q  NEW ASSIGN_HUB
+    Q  NEW ASSIGN_HUB            ← fallback for site_key_location
     R  NEW ENGINEER_AH
     S  NEW ENGINEER_ANM1         ← FO NAME
     T  NEW ENGINEER_ANM1 ID NUMBER
@@ -30,9 +30,13 @@ Columns (A–W):
     V  NEW ANM HEAD
     W  NEW ROH
 
-Field Officer rules (from spec):
+Field Officer rules:
     FO NAME   = column S ("NEW ENGINEER_ANM1")
     FO NUMBER = column U ("CONTACT NUMBER")
+
+Site key location rules:
+    PRIMARY   = column M ("ASSIGN_HUB")
+    FALLBACK  = column Q ("NEW ASSIGN_HUB")
 """
 
 from __future__ import annotations
@@ -44,15 +48,15 @@ from typing import Optional
 import pandas as pd
 
 
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
 # Configuration
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
 
 DEFAULT_SHEET = "GLOBE SITE MASTERLIST"
 HEADER_ROW = 0  # 0-indexed; Excel row 1
 
 
-# Canonical field → likely column header names
+# Canonical field → list of likely column header names (aliases)
 COLUMN_ALIASES = {
     "plaid":             ["PLAID", "PLA ID", "SITE ID", "SITE_ID"],
     "site":              ["SITE", "SITE NAME", "SITE_NAME"],
@@ -80,9 +84,9 @@ COLUMN_ALIASES = {
 }
 
 
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
 # Helpers
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
 
 def _normalize_col(name) -> str:
     """Strip + collapse internal whitespace. 'WIRELINE_NAME ' → 'WIRELINE_NAME'."""
@@ -94,9 +98,9 @@ def _norm_upper(name) -> str:
     return _normalize_col(name).upper()
 
 
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
 # Main class
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
 
 class SiteMasterlist:
     """Wrapper around the MINDANAO site masterlist Excel."""
@@ -118,7 +122,7 @@ class SiteMasterlist:
             dtype=str,
         ).fillna("")
 
-        # Normalize column headers (strip trailing spaces etc.)
+        # Normalize column headers
         self.df.columns = [_normalize_col(c) for c in self.df.columns]
 
         # Build canonical-column lookup
@@ -138,11 +142,24 @@ class SiteMasterlist:
                 .str.upper()
             )
 
-        # Diagnostic print (visible in Streamlit Cloud logs)
+        # ─── Diagnostics ───
         print(f"✅ Loaded sheet: '{self.sheet_name}'")
         print(f"   Rows: {len(self.df)}")
         print(f"   Columns ({len(self.df.columns)}): {list(self.df.columns)}")
         print(f"   Mapped canonical fields: {list(self._col_map.keys())}")
+
+        # Warn on unmapped columns (helps catch header typos)
+        missing = [
+            canon for canon in COLUMN_ALIASES
+            if canon not in self._col_map
+        ]
+        if missing:
+            print(f"   ⚠️ Unmapped fields: {missing}")
+
+        # Special check for site_key_location columns
+        if "assign_hub" not in self._col_map:
+            print("   ⚠️ Column M (ASSIGN_HUB) not found — "
+                  "site_key_location will rely on NEW ASSIGN_HUB")
 
     # ─────────────────────────────────────────────────────────
     # Internal helpers
@@ -166,7 +183,6 @@ class SiteMasterlist:
 
     def _find_column(self, candidates: list[str]) -> Optional[str]:
         """Find a column by trying each candidate alias."""
-        # Build a normalized lookup of all columns
         col_lookup = {_norm_upper(c): c for c in self.df.columns}
 
         for candidate in candidates:
@@ -227,19 +243,17 @@ class SiteMasterlist:
             except (ValueError, TypeError):
                 site_coords = f"{lat}, {lon}"
 
-        # ─── Field Officer (per spec) ───
-        # FO NAME   = column S = NEW ENGINEER_ANM1
-        # FO NUMBER = column U = CONTACT NUMBER
+        # ─── Field Officer (column S and column U) ───
         fo_name   = self._value(row, "engineer_anm1")
         fo_mobile = self._value(row, "contact_number")
 
-        # ─── Site key location (fallback to NEW ASSIGN_HUB) ───
+        # ─── Site key location (Column M, fallback Column Q) ───
         site_key_location = (
-            self._value(row, "assign_hub")
-            or self._value(row, "new_hub")
+            self._value(row, "assign_hub")        # Column M
+            or self._value(row, "new_hub")        # Fallback: Column Q
         )
 
-        # ─── TCO name ───
+        # ─── TCO name (Column N) ───
         towercо = self._value(row, "towerco")
 
         return {
@@ -250,7 +264,7 @@ class SiteMasterlist:
             "site_address":       site_address,
             "site_coords":        site_coords,
 
-            # ── Geography (individual fields, in case needed) ──
+            # ── Geography (individual fields) ──
             "province":           province,
             "municipality":       municipality,
             "barangay":           barangay,
@@ -265,10 +279,10 @@ class SiteMasterlist:
             # ── Site key location ──
             "site_key_location":  site_key_location,
 
-            # ── Field Officer (FO = S, FO Number = U) ──
+            # ── Field Officer ──
             "fo_name":            fo_name,
             "fo_mobile":          fo_mobile,
-            "site_contact_person": fo_name,      # same person
+            "site_contact_person": fo_name,
             "site_contact_mobile": fo_mobile,
 
             # ── Extra fields ──
@@ -299,10 +313,7 @@ class SiteMasterlist:
         )
 
     def search_sites(self, query: str, limit: int = 50) -> list[tuple[str, str]]:
-        """
-        Search by PLAID or site name substring.
-        Returns [(plaid, site_name), ...] for autocomplete.
-        """
+        """Search by PLAID or site name substring."""
         plaid_col = self._col_map.get("plaid")
         site_col  = self._col_map.get("site")
         if not plaid_col:
@@ -329,25 +340,25 @@ class SiteMasterlist:
     def debug_info(self) -> dict:
         """Return diagnostic info about the loaded workbook."""
         return {
-            "path":          str(self.path),
-            "sheet":         self.sheet_name,
-            "rows":          len(self.df),
-            "columns_raw":   list(self.df.columns),
+            "path":           str(self.path),
+            "sheet":          self.sheet_name,
+            "rows":           len(self.df),
+            "columns_raw":    list(self.df.columns),
             "columns_mapped": self._col_map,
             "missing_fields": [
                 canon for canon in COLUMN_ALIASES
                 if canon not in self._col_map
             ],
-            "sample_plaids": self.list_plaids()[:5],
+            "sample_plaids":  self.list_plaids()[:5],
         }
 
 
-# ─────────────────────────────────────────────────────────────
-# Standalone utilities (optional — safe to import from app.py)
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+# Standalone utilities
+# ═════════════════════════════════════════════════════════════
 
 def compose_address(site: dict) -> str:
-    """Barangay, Municipality, Province — safe standalone."""
+    """Barangay, Municipality, Province."""
     parts = [
         site.get("barangay", "").strip(),
         site.get("municipality", "").strip(),
@@ -357,7 +368,7 @@ def compose_address(site: dict) -> str:
 
 
 def compose_coords(site: dict) -> str:
-    """5-decimal coordinate pair — safe standalone."""
+    """5-decimal coordinate pair."""
     lat = site.get("latitude", "").strip()
     lon = site.get("longitude", "").strip()
     if not lat or not lon:
@@ -368,9 +379,9 @@ def compose_coords(site: dict) -> str:
         return f"{lat}, {lon}"
 
 
-# ─────────────────────────────────────────────────────────────
-# CLI test — run: python excel_loader.py data/xxx.xlsx
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+# CLI test — run: python excel_loader.py data/xxx.xlsx [PLAID]
+# ═════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import sys
