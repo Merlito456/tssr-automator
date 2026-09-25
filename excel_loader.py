@@ -5,7 +5,7 @@ Load and query the MINDANAO site masterlist Excel.
 Sheet: GLOBE SITE MASTERLIST
 Header row: 1 (0-indexed row 0)
 
-Columns (A–W):
+Columns (A-W):
     A  PLAID
     B  SITE
     C  WIRELINE_NAME
@@ -18,15 +18,15 @@ Columns (A–W):
     J  LATITUDE
     K  LONGITUDE
     L  SITE_ADD
-    M  ASSIGN_HUB                ← site_key_location source
-    N  TOWERCO
+    M  ASSIGN_HUB                <- site_key_location source
+    N  TOWERCO                   <- towercо source
     O  NEW ASSIGN_AREA
     P  NEW ASSIGN_AREA NAME
-    Q  NEW ASSIGN_HUB            ← fallback for site_key_location
+    Q  NEW ASSIGN_HUB            <- fallback for site_key_location
     R  NEW ENGINEER_AH
-    S  NEW ENGINEER_ANM1         ← FO NAME
+    S  NEW ENGINEER_ANM1         <- FO NAME
     T  NEW ENGINEER_ANM1 ID NUMBER
-    U  CONTACT NUMBER            ← FO NUMBER
+    U  CONTACT NUMBER            <- FO NUMBER
     V  NEW ANM HEAD
     W  NEW ROH
 
@@ -48,15 +48,15 @@ from typing import Optional
 import pandas as pd
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # Configuration
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 DEFAULT_SHEET = "GLOBE SITE MASTERLIST"
 HEADER_ROW = 0  # 0-indexed; Excel row 1
 
 
-# Canonical field → list of likely column header names (aliases)
+# Canonical field -> list of likely column header names (aliases)
 COLUMN_ALIASES = {
     "plaid":             ["PLAID", "PLA ID", "SITE ID", "SITE_ID"],
     "site":              ["SITE", "SITE NAME", "SITE_NAME"],
@@ -71,7 +71,7 @@ COLUMN_ALIASES = {
     "longitude":         ["LONGITUDE", "LONG", "LON"],
     "site_add":          ["SITE_ADD", "SITE ADDRESS", "ADDRESS"],
     "assign_hub":        ["ASSIGN_HUB", "ASSIGN HUB"],
-    "towerco":           ["TOWERCO", "TOWER CO", "TOWER_CO"],
+    "towerco":           ["TOWERCO", "TOWER CO", "TOWER_CO", "TOWER COMPANY"],
     "new_area":          ["NEW ASSIGN_AREA", "NEW ASSIGN AREA"],
     "new_area_name":     ["NEW ASSIGN_AREA NAME", "NEW ASSIGN AREA NAME"],
     "new_hub":           ["NEW ASSIGN_HUB", "NEW ASSIGN HUB"],
@@ -84,12 +84,12 @@ COLUMN_ALIASES = {
 }
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # Helpers
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 def _normalize_col(name) -> str:
-    """Strip + collapse internal whitespace. 'WIRELINE_NAME ' → 'WIRELINE_NAME'."""
+    """Strip + collapse internal whitespace. 'WIRELINE_NAME ' -> 'WIRELINE_NAME'."""
     return re.sub(r"\s+", " ", str(name).strip())
 
 
@@ -98,9 +98,9 @@ def _norm_upper(name) -> str:
     return _normalize_col(name).upper()
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # Main class
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 class SiteMasterlist:
     """Wrapper around the MINDANAO site masterlist Excel."""
@@ -114,7 +114,7 @@ class SiteMasterlist:
         xl = pd.ExcelFile(self.path)
         self.sheet_name = self._find_sheet(xl, sheet_name)
 
-        # Load dataframe — keep everything as string
+        # Load dataframe - keep everything as string
         self.df = pd.read_excel(
             self.path,
             sheet_name=self.sheet_name,
@@ -142,28 +142,28 @@ class SiteMasterlist:
                 .str.upper()
             )
 
-        # ─── Diagnostics ───
-        print(f"✅ Loaded sheet: '{self.sheet_name}'")
+        # --- Diagnostics ---
+        print(f"OK Loaded sheet: '{self.sheet_name}'")
         print(f"   Rows: {len(self.df)}")
         print(f"   Columns ({len(self.df.columns)}): {list(self.df.columns)}")
         print(f"   Mapped canonical fields: {list(self._col_map.keys())}")
 
-        # Warn on unmapped columns (helps catch header typos)
+        # Warn on unmapped columns
         missing = [
             canon for canon in COLUMN_ALIASES
             if canon not in self._col_map
         ]
         if missing:
-            print(f"   ⚠️ Unmapped fields: {missing}")
+            print(f"   WARN Unmapped fields: {missing}")
 
-        # Special check for site_key_location columns
-        if "assign_hub" not in self._col_map:
-            print("   ⚠️ Column M (ASSIGN_HUB) not found — "
-                  "site_key_location will rely on NEW ASSIGN_HUB")
+        # Special check for towerco column
+        if "towerco" not in self._col_map:
+            print("   WARN Column N (TOWERCO) not found - "
+                  "work_permit will be empty")
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Internal helpers
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     @staticmethod
     def _find_sheet(xl: pd.ExcelFile, target: str) -> str:
@@ -190,7 +190,7 @@ class SiteMasterlist:
             if key in col_lookup:
                 return col_lookup[key]
 
-        # Fallback — substring match on first candidate
+        # Fallback - substring match on first candidate
         if candidates:
             first = _norm_upper(candidates[0])
             for norm, orig in col_lookup.items():
@@ -206,9 +206,9 @@ class SiteMasterlist:
             return ""
         return str(row.get(col, "")).strip()
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Public API
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def get_site(self, plaid: str) -> Optional[dict]:
         """
@@ -225,7 +225,7 @@ class SiteMasterlist:
             return None
         row = rows.iloc[0]
 
-        # ─── Site address: Barangay, Municipality, Province ───
+        # --- Site address: Barangay, Municipality, Province ---
         barangay     = self._value(row, "barangay")
         municipality = self._value(row, "municipality")
         province     = self._value(row, "province")
@@ -233,7 +233,7 @@ class SiteMasterlist:
         address_parts = [barangay, municipality, province]
         site_address = ", ".join(p for p in address_parts if p)
 
-        # ─── Coordinates: 5 decimal places ───
+        # --- Coordinates: 5 decimal places ---
         lat = self._value(row, "latitude")
         lon = self._value(row, "longitude")
         site_coords = ""
@@ -243,49 +243,49 @@ class SiteMasterlist:
             except (ValueError, TypeError):
                 site_coords = f"{lat}, {lon}"
 
-        # ─── Field Officer (column S and column U) ───
+        # --- Field Officer (column S and column U) ---
         fo_name   = self._value(row, "engineer_anm1")
         fo_mobile = self._value(row, "contact_number")
 
-        # ─── Site key location (Column M, fallback Column Q) ───
+        # --- Site key location (Column M, fallback Column Q) ---
         site_key_location = (
             self._value(row, "assign_hub")        # Column M
             or self._value(row, "new_hub")        # Fallback: Column Q
         )
 
-        # ─── TCO name (Column N) ───
-        towercо = self._value(row, "towerco")
+        # --- Towerco (Column N) ---
+        towerco_value = self._value(row, "towerco")
 
         return {
-            # ── Identity ──
+            # -- Identity --
             "site_id":            self._value(row, "plaid"),
             "site_name":          self._value(row, "site"),
             "region":             self._value(row, "region"),
             "site_address":       site_address,
             "site_coords":        site_coords,
 
-            # ── Geography (individual fields) ──
+            # -- Geography (individual fields) --
             "province":           province,
             "municipality":       municipality,
             "barangay":           barangay,
 
-            # ── Coordinates (raw) ──
+            # -- Coordinates (raw) --
             "latitude":           lat,
             "longitude":          lon,
 
-            # ── Towerco ──
-            "towerco":            towercо,
+            # -- Towerco --
+            "towerco":            towerco_value,
 
-            # ── Site key location ──
+            # -- Site key location --
             "site_key_location":  site_key_location,
 
-            # ── Field Officer ──
+            # -- Field Officer --
             "fo_name":            fo_name,
             "fo_mobile":          fo_mobile,
             "site_contact_person": fo_name,
             "site_contact_mobile": fo_mobile,
 
-            # ── Extra fields ──
+            # -- Extra fields --
             "wireline":           self._value(row, "wireline"),
             "bcf":                self._value(row, "bcf"),
             "territory":          self._value(row, "territory"),
@@ -333,9 +333,9 @@ class SiteMasterlist:
 
         return results
 
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Diagnostics
-    # ─────────────────────────────────────────────────────────
+    # ---------------------------------------------------------
 
     def debug_info(self) -> dict:
         """Return diagnostic info about the loaded workbook."""
@@ -353,9 +353,9 @@ class SiteMasterlist:
         }
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # Standalone utilities
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 def compose_address(site: dict) -> str:
     """Barangay, Municipality, Province."""
@@ -379,9 +379,9 @@ def compose_coords(site: dict) -> str:
         return f"{lat}, {lon}"
 
 
-# ═════════════════════════════════════════════════════════════
-# CLI test — run: python excel_loader.py data/xxx.xlsx [PLAID]
-# ═════════════════════════════════════════════════════════════
+# =============================================================
+# CLI test - run: python excel_loader.py data/xxx.xlsx [PLAID]
+# =============================================================
 
 if __name__ == "__main__":
     import sys
@@ -396,18 +396,19 @@ if __name__ == "__main__":
 
     ml = SiteMasterlist(xlsx_path)
 
-    print("\n─── Diagnostics ───")
+    print("\n--- Diagnostics ---")
     print(json.dumps(ml.debug_info(), indent=2, default=str))
 
     if len(sys.argv) >= 3:
+        plaid = sys.argv[3 - 2]  # or sys.argv[2]
         plaid = sys.argv[2]
-        print(f"\n─── Looking up PLAID: {plaid} ───")
+        print(f"\n--- Looking up PLAID: {plaid} ---")
         site = ml.get_site(plaid)
         if site:
             print(json.dumps(site, indent=2))
         else:
-            print(f"❌ PLAID '{plaid}' not found")
+            print(f"ERROR: PLAID '{plaid}' not found")
     else:
-        print("\n─── First 5 PLAIDs ───")
+        print("\n--- First 5 PLAIDs ---")
         for p in ml.list_plaids()[:5]:
             print(f"  {p}")
