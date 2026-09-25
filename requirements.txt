@@ -1,0 +1,5 @@
+streamlit
+pdf2docx
+python-docx
+docxtpl
+Pillow
