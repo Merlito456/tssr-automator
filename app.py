@@ -14,6 +14,7 @@ TSSR Automator v0.9
 import shutil
 import tempfile
 import time
+import traceback
 import urllib.request
 from pathlib import Path
 
@@ -38,6 +39,10 @@ st.set_page_config(
     page_icon="📡",
     layout="wide",
 )
+
+# ── DEBUG: show full tracebacks instead of "redacted" messages ──
+# Remove or set to False once the load_calc issue is fixed.
+st.set_option("client.showErrorDetails", True)
 
 
 DEFAULTS = {
@@ -469,6 +474,15 @@ if st.session_state.site_data:
             "and `load_calc_render.py`, then place "
             "`data/load_calculation.xlsx`."
         )
+    except Exception as e:
+        # ── DEBUG: surface the real error instead of a redacted one ──
+        st.error(f"❌ Load calculator crashed: {type(e).__name__}: {e}")
+        with st.expander("🔎 Full traceback", expanded=True):
+            st.code(traceback.format_exc())
+        # Do NOT re-raise — let the rest of the app continue rendering.
+        # Remove the `raise` below if you want Streamlit to keep showing
+        # the red "This app has encountered an error" banner.
+        # raise
 
 
 # ═════════════════════════════════════════════════════════════
