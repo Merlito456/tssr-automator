@@ -106,7 +106,7 @@ def render(ensure_workdir, persist) -> None:
         st.write("**Existing rectifier**")
         st.json({k: v for k, v in data.items() if k != "proposed_loads"})
     with col2:
-        st.write("**Proposed loads**")
+        st.write("**Proposed load (fixed)**")
         st.json(data.get("proposed_loads", []))
 
     comp = lch.compute_sufficiency(data)
