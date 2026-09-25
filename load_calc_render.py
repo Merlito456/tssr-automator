@@ -3,15 +3,12 @@
 Fill load_calculation.xlsx (C7 block) and render it to a PNG.
 
 Merged-safe: writes to the top-left anchor of any merged range.
-Renderer order:
-    1) wkhtmltoimage  (lightweight, needs packages.txt entry)
-    2) playwright     (heavy, needs chromium install)
-    3) fall back to "no PNG" — caller shows XLSX download instead
+Renderer: Playwright + Chromium (wkhtmltopdf is not available on
+Debian trixie, the current Streamlit Cloud base image).
 """
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -165,68 +162,54 @@ def _set_by_label(ws, label_cells: dict, prefix: str, value):
 
 
 # ─────────────────────────────────────────────────────────────
-# PNG rendering — 3-tier fallback
+# PNG rendering — Playwright only
 # ─────────────────────────────────────────────────────────────
 
 def render_sheet_png(xlsx_path: str, sheet_name: str, out_png: str) -> str:
     """
-    Convert the sheet to a PNG.
-    Tier 1: wkhtmltoimage  (fast, already in packages.txt)
-    Tier 2: playwright     (needs `playwright install chromium`)
-    Tier 3: raise          (caller shows XLSX download)
+    Render an XLSX sheet to a PNG using xlsx2html + Playwright.
+    wkhtmltopdf is NOT available on Debian trixie, so Playwright is
+    the only renderer used.
     """
     xlsx_path = str(xlsx_path)
     out_png   = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
 
-    # Build the HTML (shared by both tiers)
+    # 1) Build the HTML from the sheet
     try:
         from xlsx2html import xlsx2html
     except ImportError as e:
         raise RuntimeError(
-            "Missing dependency: xlsx2html. Add to requirements.txt."
+            "Missing dependency: xlsx2html. Add it to requirements.txt "
+            "and reboot the app."
         ) from e
 
     html_path = out_png.with_suffix(".html")
     with open(html_path, "w", encoding="utf-8") as f:
         xlsx2html(xlsx_path, sheet_name=sheet_name, output=f, locale="en_US")
 
-    # ── Tier 1: wkhtmltoimage ──
-    wk = shutil.which("wkhtmltoimage")
-    if wk:
-        try:
-            subprocess.run(
-                [wk, "--width", "1400", "--quality", "90",
-                 "--enable-local-file-access",
-                 str(html_path), str(out_png)],
-                check=True, timeout=90,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            if out_png.exists() and out_png.stat().st_size > 1000:
-                return str(out_png)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            print(f"[render_sheet_png] wkhtmltoimage failed: {e}")
-
-    # ── Tier 2: playwright ──
+    # 2) Screenshot with Playwright
     try:
         from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page(viewport={"width": 1400, "height": 1300})
-            page.goto(f"file://{html_path.resolve()}")
-            page.wait_for_timeout(500)
-            page.screenshot(
-                path=str(out_png),
-                full_page=False,
-                clip={"x": 0, "y": 0, "width": 1400, "height": 1300},
-            )
-            browser.close()
-        if out_png.exists() and out_png.stat().st_size > 1000:
-            return str(out_png)
-    except Exception as e:
-        print(f"[render_sheet_png] playwright failed: {e}")
+    except ImportError as e:
+        raise RuntimeError(
+            "Playwright not installed. Add 'playwright' to requirements.txt "
+            "and create setup.sh with 'python -m playwright install chromium'."
+        ) from e
 
-    raise RuntimeError(
-        "PNG rendering failed. Ensure packages.txt has 'wkhtmltopdf' "
-        "and requirements.txt has 'xlsx2html', then reboot the app."
-    )
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1400, "height": 1300})
+        page.goto(f"file://{html_path.resolve()}")
+        page.wait_for_timeout(600)
+        page.screenshot(
+            path=str(out_png),
+            full_page=False,
+            clip={"x": 0, "y": 0, "width": 1400, "height": 1300},
+        )
+        browser.close()
+
+    if not out_png.exists() or out_png.stat().st_size < 1000:
+        raise RuntimeError("Playwright did not produce a valid PNG.")
+
+    return str(out_png)
