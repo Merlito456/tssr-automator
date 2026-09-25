@@ -29,6 +29,37 @@ CRITICAL RULES
 ═══════════════════════════════════════════════════════════════
 FIELD-BY-FIELD GUIDE (where to look, what to accept)
 ═══════════════════════════════════════════════════════════════
+"site_class"
+  WHERE: "Site Class", "Tower Class", or "Structure Classification" in the site details section
+  CHOICES: "C1", "C2", "C3", "C4", "C5", "Custom"
+  DEFAULT: "C3"  <-- If not explicitly found in the TSSR, use "C3".
+  Most Philippine sites are C3, so this is the safe default.
+  EXAMPLE: If TSSR says "Site Class: C3" -> "C3"
+  If TSSR says "Tower Class: C2" -> "C2"
+  If not found anywhere -> "C3"
+
+...
+
+"flood_history"
+  WHERE: "Flood History", "Flood Prone", or site condition narrative
+  CHOICES: "None", "Low", "Moderate", "High", "Unknown", "N/A"
+  DEFAULT: "N/A"  <-- If not explicitly stated, use "N/A".
+  EXAMPLE: "None" -> "None"
+  If no flood info is present -> "N/A"
+
+...
+
+"site_key_location"
+  DO NOT EXTRACT. This comes from the masterlist. Return "".
+
+...
+
+"work_permit"
+  WHERE: "Work Permit" checkboxes OR "Site Access Requirement" narrative
+  CHOICES (pick exactly ONE): "RAAWA", "Others", ""
+  RULE: Only return "RAAWA" if the TSSR explicitly mentions "RAAWA".
+        Only return "Others" if it says "Others" with a specific value.
+        Otherwise -> "".
 
 "site_class"
   WHERE: "Site Class", "Tower Class", or "Structure Classification" in the site details section
