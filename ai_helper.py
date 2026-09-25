@@ -97,21 +97,46 @@ FIELD-BY-FIELD GUIDE (extract in this exact order)
   If not found, use "".
 
 "work_permit"
-  DEPENDS ON "access_requirement" — extract this AFTER access_requirement.
-  WHERE: Derive from the "access_requirement" value above.
-  CHOICES (pick exactly ONE): "RAAWA", "Others", ""
+  DEPENDS ON "access_requirement" AND the site's TOWERCO.
+  Extract this AFTER access_requirement is known.
+
   RULES:
-    1. If access_requirement contains "RAAWA" (any case) -> return "RAAWA"
+    1. If access_requirement contains "RAAWA" (case-insensitive):
+         a. Look up the site's TOWERCO (from masterlist, e.g. PHILTOWER,
+            FTAP, EDOTCO, etc.)
+         b. Compose: "RAAWA" + the towerco-specific requirement
+         c. Return the composed string
+       Towerco mapping (use the site's actual TOWERCO from the TSSR):
+         - PHILTOWER  -> "RAAWA, HSWP and iTower Account"
+         - FTAP       -> "RAAWA, iAMS account"
+         - EDOTCO     -> "RAAWA, Approved TAP"
+         - (unknown)  -> "RAAWA"
     2. Else if access_requirement contains "Others" with a specific value
-       -> return "Others"
-    3. Else (e.g., "Office Hours", "LILO", or any generic text without
-       a permit type) -> return ""
+       -> return "Others, <the specific value>"
+    3. Else (e.g., "Office Hours", generic text without RAAWA) -> return ""
+
   EXAMPLES:
-    access_requirement = "RAAWA, LILO, Approved Ticket" -> "RAAWA"
-    access_requirement = "RAAWA, HSWP and iTower Account" -> "RAAWA"
-    access_requirement = "Office Hours" -> ""
-    access_requirement = "LILO, Approved Ticket" -> "" (no RAAWA)
-    access_requirement = "" -> ""
+    access_requirement = "Raawa, LILO, Approved Ticket"
+      TOWERCO = PHILTOWER
+      -> "RAAWA, HSWP and iTower Account"
+
+    access_requirement = "RAAWA, LILO, Approved Ticket"
+      TOWERCO = FTAP
+      -> "RAAWA, iAMS account"
+
+    access_requirement = "RAAWA"
+      TOWERCO = EDOTCO
+      -> "RAAWA, Approved TAP"
+
+    access_requirement = "RAAWA"
+      TOWERCO = (unknown)
+      -> "RAAWA"
+
+    access_requirement = "Office Hours"
+      -> ""
+
+    access_requirement = "" 
+      -> ""
 
 "site_type"
   WHERE: "Site Type" or narrative description of the structure
