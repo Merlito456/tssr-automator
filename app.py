@@ -21,7 +21,7 @@ import ai_helper
 import state_manager as sm
 from excel_loader import SiteMasterlist
 from components.paste_image import paste_image, save_pasted_image
-from towercо_rules import get_permits_for_towerco
+from permit_rules import get_permits_for_towerco
 
 
 APP_DIR = Path(__file__).resolve().parent
