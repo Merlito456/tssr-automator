@@ -26,7 +26,7 @@ NOKIA_MF2_LOAD = {
 
 
 # ─────────────────────────────────────────────────────────────
-# Prompt
+# Prompt (with __WHICH__ placeholder)
 # ─────────────────────────────────────────────────────────────
 
 LOAD_CALC_PROMPT = """You are a telecom DC power analyst reading an Ericsson TSSR.
@@ -98,8 +98,8 @@ def build_prompt(which_rectifier: str = "EXISTING") -> str:
     Return the extraction prompt, customized for a specific rectifier.
 
     Args:
-        which_rectifier: human-readable identifier of the rectifier to
-            extract, e.g. "RS1", "RS2", or the default "EXISTING".
+        which_rectifier: identifier of the rectifier to extract,
+            e.g. "RS1", "RS2", or "EXISTING".
 
     Returns:
         The prompt string with `__WHICH__` replaced.
@@ -164,23 +164,14 @@ def compute_sufficiency(d: dict) -> dict:
     The W → A conversion uses the site's actual DC bus voltage
     (`battery_voltage`), falling back to 48 V only if it's missing.
     """
-    # System DC voltage — read from the AI extraction, default 48 V
     voltage = d.get("battery_voltage") or 48
-
-    # Module ampacity = module wattage / system voltage
     module_a = (d.get("module_rating_w") or 0) / voltage
-
-    # Existing rectifier capacity = installed modules × per-module amps
     cap_a    = (d.get("modules_in_operation") or 0) * module_a
-
-    # Existing battery capacity in Ah (banks × per-cell Ah)
     batt_ah  = (d.get("battery_banks") or 0) * (d.get("battery_capacity_ah") or 0)
 
-    # Proposed load is fixed (Nokia MF-2, already given at 48 V DC)
     prop_a   = NOKIA_MF2_LOAD["current_a"]      # 7.4 A
 
     total_a  = (d.get("present_load_a") or 0) + prop_a
-    # Reserve 10 % of battery Ah as headroom, expressed in amps
     avail_a  = cap_a - total_a - 0.10 * batt_ah
     pct_util = (total_a / cap_a) if cap_a else 0
     bbut_h   = (batt_ah / total_a) if total_a else 0
