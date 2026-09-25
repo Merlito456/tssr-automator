@@ -1,9 +1,10 @@
 # app.py
 """
-TSSR Automator v0.6
+TSSR Automator v0.7
 - Excel masterlist (auto-loaded)
 - AI-assisted field extraction via Gemini/ChatGPT
 - Ericsson TSSR PDF (image extraction)
+- Hardcoded work_permit + access_requirement from towercо rules
 - Persistent state across refresh
 - Image grid with blue/black status indicators
 - Real Ctrl+V paste via custom component
@@ -20,6 +21,7 @@ import ai_helper
 import state_manager as sm
 from excel_loader import SiteMasterlist
 from components.paste_image import paste_image, save_pasted_image
+from towercо_rules import get_permits_for_towerco
 
 
 # ═════════════════════════════════════════════════════════════
@@ -404,26 +406,34 @@ if st.session_state.site_data:
     if st.session_state.get("ai_applied"):
         st.success("🤖 AI fields applied — view them in the preview below.")
 
+    # ─── Preview merged site data (with derived towercо fields) ───
     with st.expander("🔍 Preview merged site data", expanded=False):
-        display_keys = [
-            ("site_class",         "Site Class"),
-            ("room_access",        "Room Access"),
-            ("cabin_location",     "Cabin Location"),
-            ("flood_history",      "Flood History"),
-            ("hauling_remarks",    "Hauling Remarks"),
-            ("site_profile",       "Site Profile"),
-            ("site_key_location",  "Site Key Location"),
-            ("site_owner",         "Site Owner"),
-            ("site_security",      "Site Security"),
-            ("work_permit",        "Work Permit"),
-            ("access_requirement", "Access Requirement"),
-            ("site_type",          "Site Type"),
-            ("site_accessible",    "Site Accessible"),
-            ("no_bridge",          "No. of Bridge"),
-            ("foot_trail",         "Foot Trail"),
+        site = st.session_state.site_data
+
+        # Derive permits from towercо
+        towercо = site.get("towerco", "")
+        permits = get_permits_for_towerco(towercо)
+
+        display_fields = [
+            ("Site Class",        site.get("site_class", "")),
+            ("Room Access",       site.get("room_access", "")),
+            ("Cabin Location",    site.get("cabin_location", "")),
+            ("Flood History",     site.get("flood_history", "")),
+            ("Hauling Remarks",   site.get("hauling_remarks", "")),
+            ("Site Profile",      site.get("site_profile", "")),
+            ("Site Key Location", site.get("site_key_location", "")),
+            ("Site Owner",        site.get("site_owner", "")),
+            ("Site Security",     site.get("site_security", "")),
+            ("Site Type",         site.get("site_type", "")),
+            ("Site Accessible",   site.get("site_accessible", "")),
+            ("No. of Bridge",     site.get("no_bridge", "")),
+            ("Foot Trail",        site.get("foot_trail", "")),
+            ("— DERIVED FROM TOWERCO —", ""),
+            ("Work Permit",        permits["work_permit"]),
+            ("Access Requirement", permits["access_requirement"]),
         ]
-        for key, label in display_keys:
-            val = st.session_state.site_data.get(key)
+
+        for label, val in display_fields:
             if val not in (None, "", [], {}):
                 st.write(f"**{label}:** `{val}`")
 
@@ -645,7 +655,7 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.caption("v0.6 · AI-assisted fields")
+    st.caption("v0.7 · towercо-derived permits")
 
     if st.session_state.get("selected_plaid"):
         st.success(f"Working on: **{st.session_state.selected_plaid}**")
