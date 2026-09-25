@@ -3,8 +3,12 @@
 Fill load_calculation.xlsx (C7 block) and render it to a PNG.
 
 Merged-safe: writes to the top-left anchor of any merged range.
-Renderer: Playwright + Chromium (wkhtmltopdf is not available on
-Debian trixie, the current Streamlit Cloud base image).
+
+Renderer: Playwright + Chromium.
+(wkhtmltopdf is no longer used — it is not available on Debian trixie,
+the current Streamlit Cloud base image.)
+
+Proposed load: always a single Nokia MF-2 OLT (fixed in load_calc_helper).
 """
 from __future__ import annotations
 
@@ -13,7 +17,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from load_calc_helper import compute_sufficiency
+from load_calc_helper import compute_sufficiency, NOKIA_MF2_LOAD
 
 
 SHEET_BY_INDEX = {
@@ -81,7 +85,7 @@ def fill_template(
             return
         _safe_set(ws, cell.row + row_offset, cell.column + col_offset, value)
 
-    # ---- C7.1 ----
+    # ---- C7.1 (existing rectifier) ----
     put("1) EXISTING RECTIFIER SYSTEM BRAND - MODEL",
         data["rectifier_brand"])
     put("2) MAXIMUM RECTIFIER MODULES / INSTALLED",
@@ -99,16 +103,21 @@ def fill_template(
     put("8) ACTUAL FLOAT VOLTAGE (V)",
         data["actual_float_voltage_v"])
 
-    # ---- C7.2 (proposed loads) — merged-safe ----
+    # ---- C7.2 (proposed loads) — fixed Nokia MF-2, merged-safe ----
     start_row = _find_first_load_row(ws)
-    for i, load in enumerate(data.get("proposed_loads", [])):
-        r = start_row + i
-        _safe_set(ws, r, 1,  load.get("load_no", i + 1))
-        _safe_set(ws, r, 3,  load.get("equipment", ""))
-        _safe_set(ws, r, 12, load.get("power_w", 0))
-        _safe_set(ws, r, 15, load.get("current_a", 0))
-        _safe_set(ws, r, 21, load.get("cable_awg", ""))
-        _safe_set(ws, r, 27, load.get("breaker_a", ""))
+
+    # Write the single Nokia MF-2 row
+    _safe_set(ws, start_row, 1,  NOKIA_MF2_LOAD["load_no"])
+    _safe_set(ws, start_row, 3,  NOKIA_MF2_LOAD["equipment"])
+    _safe_set(ws, start_row, 12, NOKIA_MF2_LOAD["power_w"])
+    _safe_set(ws, start_row, 15, NOKIA_MF2_LOAD["current_a"])
+    _safe_set(ws, start_row, 21, NOKIA_MF2_LOAD["cable_awg"])
+    _safe_set(ws, start_row, 27, NOKIA_MF2_LOAD["breaker_a"])
+
+    # Clear rows 2–7 so no stale template data lingers
+    for r in range(start_row + 1, start_row + 7):
+        for col in (1, 3, 12, 15, 21, 27):
+            _safe_set(ws, r, col, "")
 
     # ---- Computed block ----
     comp = compute_sufficiency(data)
@@ -168,11 +177,12 @@ def _set_by_label(ws, label_cells: dict, prefix: str, value):
 def render_sheet_png(xlsx_path: str, sheet_name: str, out_png: str) -> str:
     """
     Render an XLSX sheet to a PNG using xlsx2html + Playwright.
-    wkhtmltopdf is NOT available on Debian trixie, so Playwright is
-    the only renderer used.
+
+    wkhtmltopdf is NOT used — it is no longer available on Debian
+    trixie. Playwright + Chromium is the only renderer.
     """
     xlsx_path = str(xlsx_path)
-    out_png   = Path(out_png)
+    out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
 
     # 1) Build the HTML from the sheet
