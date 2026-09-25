@@ -1,14 +1,14 @@
 # core.py
 """
-TSSR Automator — core pipeline (triple source).
+TSSR Automator - core pipeline (triple source).
 
-Excel masterlist → site identity (authoritative)
-AI extraction    → supplementary fields (fills gaps)
-Ericsson TSSR    → images + fallback fields
-User uploads     → optional image overrides
+Excel masterlist -> site identity (authoritative)
+AI extraction    -> supplementary fields (fills gaps)
+Ericsson TSSR    -> images + fallback fields
+User uploads     -> optional image overrides
 
-Work permit + Access requirement are HARDCODED from towercо rules
-(see towercо_rules.py) — not from AI.
+Work permit + Access requirement are HARDCODED from towerco rules
+(see permit_rules.py) - not from AI.
 """
 
 from __future__ import annotations
@@ -26,12 +26,12 @@ from docxtpl import DocxTemplate, InlineImage
 from pdf2docx import Converter
 from PIL import Image
 
-from towercо_rules import get_permits_for_towerco
+from permit_rules import get_permits_for_towerco
 
 
-# ═════════════════════════════════════════════════════════════
-# 1. PDF → DOCX
-# ═════════════════════════════════════════════════════════════
+# =============================================================
+# 1. PDF to DOCX
+# =============================================================
 
 def pdf_to_docx(pdf_path: str, out_dir: str) -> str:
     """Convert PDF to DOCX using LibreOffice, with pdf2docx as fallback."""
@@ -63,9 +63,9 @@ def pdf_to_docx(pdf_path: str, out_dir: str) -> str:
     return str(target)
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # 2. Extract images from DOCX
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 def extract_images(docx_path: str, out_dir: str) -> list[str]:
     """Extract all images from word/media/ inside a DOCX."""
@@ -81,9 +81,9 @@ def extract_images(docx_path: str, out_dir: str) -> list[str]:
     return images
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # 3. Grid composer for multi-image slots
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 def make_grid(images: list[str], max_width: int = 1200,
               cols: int = 2, padding: int = 10) -> str:
@@ -126,18 +126,18 @@ def make_grid(images: list[str], max_width: int = 1200,
     return str(out)
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # 4. Checkbox helper
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 def cb(flag: bool) -> str:
     """Return a checked or unchecked box character."""
-    return "☑" if flag else "☐"
+    return "[x]" if flag else "[ ]"
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # 5. Merge AI-extracted fields into site data
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 def merge_ai_fields(site: dict, ai_fields: dict) -> dict:
     """
@@ -145,7 +145,7 @@ def merge_ai_fields(site: dict, ai_fields: dict) -> dict:
     Priority: Excel > AI > existing site dict > empty.
 
     Fields derived by the app (work_permit, access_requirement,
-    site_key_location) are SKIPPED — they're computed elsewhere.
+    site_key_location) are SKIPPED - they're computed elsewhere.
     """
     SKIP_FIELDS = {"work_permit", "access_requirement", "site_key_location"}
 
@@ -172,9 +172,9 @@ def merge_ai_fields(site: dict, ai_fields: dict) -> dict:
     return merged
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # 6. Build the docxtpl context
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 def build_context(
     site: dict,
@@ -184,44 +184,38 @@ def build_context(
     """
     Merge site data (Excel + AI), Ericsson TSSR values, and image paths
     into a single dict matching the template's tag contract.
-
-    Priority chain per field:
-      1. site dict (Excel + AI merged)
-      2. ericsson_fields (parsed TSSR)
-      3. hardcoded defaults
     """
     ctx = {}
 
     def pick(*sources, default=""):
-        """Return the first non-empty source value."""
         for s in sources:
             if s not in ("", None, [], {}):
                 return s
         return default
 
-    # ─── Identity ──────────────────────────────────────────
+    # --- Identity ---
     ctx["site_id"]      = pick(site.get("site_id"),      ericsson_fields.get("site_id"))
     ctx["site_name"]    = pick(site.get("site_name"),    ericsson_fields.get("site_name"))
     ctx["region"]       = pick(site.get("region"),       ericsson_fields.get("region"), default="MINDANAO")
     ctx["site_address"] = pick(site.get("site_add"),     site.get("site_address"), compose_address_from(site))
     ctx["site_coords"]  = pick(site.get("site_coords"),  compose_coords_from(site))
-    ctx["towercо"]      = pick(site.get("towerco"),      ericsson_fields.get("towerco"))
+    ctx["towerco"]      = pick(site.get("towerco"),      ericsson_fields.get("towerco"))
 
-    # ─── Contact (FO = Column S, phone = Column U) ─────────
+    # --- Contact (FO = Column S, phone = Column U) ---
     ctx["site_contact_person"] = pick(site.get("site_contact_person"), site.get("fo_name"))
     ctx["site_contact_mobile"] = pick(site.get("site_contact_mobile"), site.get("fo_mobile"))
     ctx["fo_name"]             = pick(site.get("fo_name"))
     ctx["fo_mobile"]           = pick(site.get("fo_mobile"))
 
-    # ─── Lessor ────────────────────────────────────────────
+    # --- Lessor ---
     ctx["lessor_details"] = pick(site.get("lessor_details"), ericsson_fields.get("lessor_details"), default="N/A")
     ctx["lessor_mobile"]  = pick(site.get("lessor_mobile"),  ericsson_fields.get("lessor_mobile"),  default="N/A")
 
-    # ─── TCO / Site class ──────────────────────────────────
+    # --- TCO / Site class ---
     ctx["tco_name"]   = pick(site.get("towerco"), ericsson_fields.get("tco_name"))
     ctx["site_class"] = pick(site.get("site_class"), ericsson_fields.get("site_class"))
 
-    # ─── Site type checkboxes ──────────────────────────────
+    # --- Site type checkboxes ---
     site_type = (
         site.get("site_type")
         or ericsson_fields.get("site_type")
@@ -249,7 +243,7 @@ def build_context(
         and site_type != ""
     )
 
-    # ─── Site owner checkboxes ─────────────────────────────
+    # --- Site owner checkboxes ---
     owner = pick(
         site.get("site_owner"),
         ericsson_fields.get("owner"),
@@ -260,24 +254,24 @@ def build_context(
     ctx["owner_govt"]    = cb("GOVERNMENT" in owner or "GOVT" in owner)
     ctx["owner_tco"]     = cb("TCO" in owner or "TOWER" in owner)
 
-    # ─── Room access + cabin location ──────────────────────
+    # --- Room access + cabin location ---
     ctx["room_access"]    = pick(site.get("room_access"),    ericsson_fields.get("room_access"))
     ctx["cabin_location"] = pick(site.get("cabin_location"), ericsson_fields.get("cabin_location"), default="Ground Level")
 
-    # ─── Flood history + hauling ───────────────────────────
+    # --- Flood history + hauling ---
     ctx["flood_history"]   = pick(site.get("flood_history"),   ericsson_fields.get("flood_history"),   default="None")
     ctx["hauling_remarks"] = pick(site.get("hauling_remarks"), ericsson_fields.get("hauling_remarks"), default="N/A")
 
-    # ─── Site profile ──────────────────────────────────────
+    # --- Site profile ---
     ctx["site_profile"] = pick(site.get("site_profile"), ericsson_fields.get("site_profile"), default="GT Wireless")
 
-    # ─── Site key location ─────────────────────────────────
+    # --- Site key location ---
     ctx["site_key_location"] = pick(
         site.get("site_key_location"),
         ericsson_fields.get("site_key_location"),
     )
 
-    # ─── Site security checkboxes ──────────────────────────
+    # --- Site security checkboxes ---
     sec_raw = site.get("site_security") or ericsson_fields.get("site_security", "")
     if isinstance(sec_raw, list):
         sec = " ".join(str(s) for s in sec_raw).upper()
@@ -290,19 +284,19 @@ def build_context(
     ctx["sec_roving"]     = cb("ROVING" in sec)
     ctx["sec_others"]     = cb("OTHERS" in sec)
 
-    # ─── Work permit + Access requirement (HARDCODED FROM TOWERCO) ───
+    # --- Work permit + Access requirement (HARDCODED FROM TOWERCO) ---
     towercо = pick(site.get("towerco"), ericsson_fields.get("towerco"))
     permits = get_permits_for_towerco(towercо)
 
     ctx["work_permit"]        = permits["work_permit"]
     ctx["access_requirement"] = permits["access_requirement"]
 
-    # Legacy checkbox tags (still populated in case template uses them)
+    # Legacy checkbox tags
     permit_upper = ctx["work_permit"].upper()
     ctx["workpermit_raawa"]  = cb("RAAWA" in permit_upper)
     ctx["workpermit_others"] = cb("OTHERS" in permit_upper)
 
-    # ─── Vehicle accessibility ─────────────────────────────
+    # --- Vehicle accessibility ---
     ctx["no_bridge"]   = pick(site.get("no_bridge"),   ericsson_fields.get("no_bridge"),   default="N/A")
     ctx["foot_trail"]  = pick(site.get("foot_trail"),  ericsson_fields.get("foot_trail"),  default="N/A")
     ctx["bridge_ton"]  = pick(site.get("bridge_ton"),  ericsson_fields.get("bridge_ton"),  default="N/A")
@@ -310,10 +304,10 @@ def build_context(
     ctx["distance_m"]  = pick(site.get("distance_m"),  ericsson_fields.get("distance_m"),  default="N/A")
     ctx["by_boat"]     = pick(site.get("by_boat"),     ericsson_fields.get("by_boat"),     default="N/A")
 
-    # ─── Site remarks (generated) ──────────────────────────
+    # --- Site remarks ---
     ctx["site_remarks"] = build_site_remarks(site, ericsson_fields)
 
-    # ─── Images (paths; wrapped later by generator) ────────
+    # --- Images ---
     IMAGE_SLOTS = [
         "img_vicinity_map",
         "img_site_photo_1", "img_site_photo_2",
@@ -328,7 +322,7 @@ def build_context(
     for slot in IMAGE_SLOTS:
         ctx[slot] = images.get(slot, "")
 
-    # ─── Materials ─────────────────────────────────────────
+    # --- Materials ---
     MATERIAL_KEYS = [
         "grounding", "patchcord", "powercable", "lugs", "tube",
         "tiewrap", "termlog", "conduit", "dcbreaker",
@@ -340,9 +334,9 @@ def build_context(
     return ctx
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # 7. Helpers
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 def compose_address_from(site: dict) -> str:
     parts = [site.get("barangay", ""), site.get("municipality", ""),
@@ -384,9 +378,9 @@ def build_site_remarks(site: dict, ericsson: dict) -> str:
     )
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # 8. Generate the final DOCX
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 def generate_nokia_tssr(
     template_path: str,
@@ -394,11 +388,7 @@ def generate_nokia_tssr(
     context: dict,
     image_widths: dict | None = None,
 ) -> str:
-    """
-    Render the Nokia template with the given context.
-    Any context value that points to an existing file path
-    will be wrapped as an InlineImage.
-    """
+    """Render the Nokia template with the given context."""
     doc = DocxTemplate(template_path)
 
     DEFAULT_WIDTHS = {
@@ -438,9 +428,9 @@ def generate_nokia_tssr(
     return output_path
 
 
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 # 9. Output filename helper
-# ═════════════════════════════════════════════════════════════
+# =============================================================
 
 def make_output_name(site_id: str, site_name: str, ext: str = "docx") -> str:
     site_id = (site_id or "SITE").replace(" ", "")
