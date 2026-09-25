@@ -1,17 +1,17 @@
 # load_calc_page.py
 """
 Streamlit page: AI Load Calculator for RS1 / RS2 / RS3 / RS4.
+Called from app.py as:
+    load_calc_page.render(ensure_workdir, persist)
 """
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import streamlit as st
 
 import load_calc_helper as lch
 import load_calc_render as lcr
-from state_manager import save_state
 
 
 TEMPLATE = Path(__file__).parent / "data" / "load_calculation.xlsx"
@@ -26,17 +26,24 @@ RS_OPTIONS = {
 SLOT_BY_RS = {
     "RS1 — Rectifier 1": "RS1_load_calc_img",
     "RS2 — Rectifier 2": "RS2_load_calc_img",
-    # RS3/RS4 currently have no image slot in the Nokia template;
-    # we still render and save, but keep a separate dict entry.
+    # RS3 / RS4 have no Nokia image slot — render-only
 }
 
 
-def render(ensure_workdir) -> None:
+def render(ensure_workdir, persist) -> None:
+    """
+    Two-arg signature to match app.py:
+        load_calc_page.render(ensure_workdir, persist)
+    """
     st.subheader("⚡ AI Load Calculator (C7)")
 
     if not TEMPLATE.exists():
         st.error(f"❌ Template not found: `{TEMPLATE}`")
-        st.stop()
+        st.info(
+            "Place your `load_calculation.xlsx` in the `data/` folder "
+            "next to `app.py`."
+        )
+        return
 
     # 1) Pick which rectifier system
     rs_label = st.radio(
@@ -63,8 +70,12 @@ def render(ensure_workdir) -> None:
 
         col_a, col_b = st.columns([1, 1])
         with col_a:
-            if st.button("✔ Parse JSON & preview", type="primary",
-                         use_container_width=True, key="lc_parse"):
+            if st.button(
+                "✔ Parse JSON & preview",
+                type="primary",
+                use_container_width=True,
+                key="lc_parse",
+            ):
                 parsed = lch.extract_json(response)
                 if not parsed:
                     st.error("❌ Could not parse JSON.")
@@ -74,10 +85,12 @@ def render(ensure_workdir) -> None:
                     if warnings:
                         st.warning("⚠️ " + "\n- ".join(warnings))
                     st.success("✅ Parsed OK")
+                    persist()
         with col_b:
             if st.button("🗑 Clear", use_container_width=True, key="lc_clear"):
-                st.session_state.pop("load_calc_data", None)
+                st.session_state["load_calc_data"] = None
                 st.session_state.pop("load_calc_json", None)
+                persist()
                 st.rerun()
 
     # 4) Preview + render
@@ -100,19 +113,32 @@ def render(ensure_workdir) -> None:
     st.write("**Computed**")
     st.json(comp)
 
-    if st.button("🖼 Render filled sheet → PNG & save as load calc image",
-                 type="primary", use_container_width=True, key="lc_render"):
+    if st.button(
+        "🖼 Render filled sheet → PNG & save as load calc image",
+        type="primary",
+        use_container_width=True,
+        key="lc_render",
+    ):
         workdir = Path(ensure_workdir())
         out_xlsx = workdir / f"{sheet_name.replace(' ', '_')}.xlsx"
-        out_png  = workdir / "uploads" / f"{sheet_name.replace(' ', '_')}.png"
+        out_png = workdir / "uploads" / f"{sheet_name.replace(' ', '_')}.png"
         out_png.parent.mkdir(parents=True, exist_ok=True)
 
         with st.spinner("Filling template…"):
-            lcr.fill_template(str(TEMPLATE), str(out_xlsx), data, sheet_name)
+            try:
+                lcr.fill_template(
+                    str(TEMPLATE), str(out_xlsx), data, sheet_name
+                )
+            except Exception as e:
+                st.error(f"❌ Fill failed: {e}")
+                st.exception(e)
+                return
 
         with st.spinner("Rendering PNG…"):
             try:
-                lcr.render_sheet_png(str(out_xlsx), sheet_name, str(out_png))
+                lcr.render_sheet_png(
+                    str(out_xlsx), sheet_name, str(out_png)
+                )
             except Exception as e:
                 st.error(f"❌ Render failed: {e}")
                 st.info("Fallback: the filled XLSX is still available.")
@@ -120,7 +146,10 @@ def render(ensure_workdir) -> None:
                     "⬇️ Download filled XLSX",
                     data=Path(out_xlsx).read_bytes(),
                     file_name=out_xlsx.name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument"
+                        ".spreadsheetml.sheet"
+                    ),
                 )
                 return
 
@@ -128,10 +157,13 @@ def render(ensure_workdir) -> None:
         slot = SLOT_BY_RS.get(rs_label)
         if slot:
             st.session_state.image_map[slot] = str(out_png)
-            save_state(dict(st.session_state))
+            persist()
             st.success(f"✅ Saved to slot `{slot}`")
         else:
-            st.info(f"Rendered but {rs_label} has no Nokia slot — file kept at {out_png}")
+            st.info(
+                f"Rendered but {rs_label} has no Nokia slot — "
+                f"file kept at `{out_png}`"
+            )
 
         st.image(str(out_png), caption=f"{rs_label} — C7 block")
         st.download_button(
