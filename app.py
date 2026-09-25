@@ -1,7 +1,8 @@
 # app.py
 """
-TSSR Automator v0.5
+TSSR Automator v0.6
 - Excel masterlist (auto-loaded)
+- AI-assisted field extraction via Gemini/ChatGPT
 - Ericsson TSSR PDF (image extraction)
 - Persistent state across refresh
 - Image grid with blue/black status indicators
@@ -15,6 +16,7 @@ from pathlib import Path
 import streamlit as st
 
 import core
+import ai_helper
 import state_manager as sm
 from excel_loader import SiteMasterlist
 from components.paste_image import paste_image, save_pasted_image
@@ -54,6 +56,7 @@ DEFAULTS = {
     "image_map": {},
     "materials": {},
     "selected_plaid": "",
+    "ai_applied": False,
 }
 
 for k, v in DEFAULTS.items():
@@ -94,6 +97,8 @@ def reset_to_new_site():
             continue
         if isinstance(v, (list, dict)):
             st.session_state[k] = type(v)()
+        elif isinstance(v, bool):
+            st.session_state[k] = False
         else:
             st.session_state[k] = v
 
@@ -152,7 +157,6 @@ def image_dialog(slot: str, label: str, extracted: list[str]):
     st.markdown(f"### {label}")
     st.caption(f"Slot key: `{slot}`")
 
-    # Current image preview
     current = st.session_state.image_map.get(slot, "")
     if current and Path(current).exists():
         st.image(current, use_container_width=True)
@@ -207,7 +211,7 @@ def image_dialog(slot: str, label: str, extracted: list[str]):
                 persist()
                 st.rerun()
 
-    # ─── Pick from TSSR extracts ───
+    # ─── Pick from TSSR ───
     elif method == "🖼 Pick from TSSR":
         if not extracted:
             st.warning("No extracted images. Upload an Ericsson TSSR first.")
@@ -243,7 +247,7 @@ def image_dialog(slot: str, label: str, extracted: list[str]):
 col_a, col_b, col_c = st.columns([3, 1, 1])
 with col_a:
     st.title("📡 TSSR Automator")
-    st.caption("Excel masterlist + Ericsson TSSR → Nokia TSSR DOCX")
+    st.caption("Excel masterlist + AI + Ericsson TSSR → Nokia TSSR DOCX")
 with col_b:
     if st.button(
         "🆕 New Site",
@@ -312,6 +316,7 @@ if site_id and site_id != st.session_state.selected_plaid:
     st.session_state.site_data = (
         st.session_state.masterlist.get_site(site_id) or {}
     )
+    st.session_state.ai_applied = False
     persist()
     st.rerun()
 
@@ -330,16 +335,111 @@ if st.session_state.site_data:
 
 
 # ═════════════════════════════════════════════════════════════
-# STEP 3 — Ericsson TSSR
+# STEP 3 — AI-Assisted Fields
 # ═════════════════════════════════════════════════════════════
 
 if st.session_state.site_data:
     st.divider()
-    st.subheader("3 · Ericsson TSSR (optional)")
+    st.subheader("3 · AI-Assisted Fields (optional)")
+    st.caption(
+        "Fields not in the masterlist can be filled with AI help. "
+        "Copy the prompt below, feed it to **Gemini** or **ChatGPT** "
+        "along with the Ericsson TSSR PDF, then paste the JSON response back."
+    )
+
+    # ─── Step 1: Prompt ───
+    with st.expander("📋 Step 1 — Copy this prompt", expanded=False):
+        prompt_text = ai_helper.build_prompt()
+        st.code(prompt_text, language="text")
+        st.caption(
+            "💡 **How to use in Gemini:** "
+            "Attach the Ericsson TSSR PDF → paste this prompt → send. "
+            "Copy the JSON Gemini returns."
+        )
+
+    # ─── Step 2: Paste response ───
+    with st.expander("📥 Step 2 — Paste AI response", expanded=not st.session_state.get("ai_applied", False)):
+        ai_response = st.text_area(
+            "Paste the AI's JSON response here:",
+            height=200,
+            key="ai_json_input",
+            placeholder='{"site_class": "C3", "room_access": "Outdoor", ...}',
+        )
+
+        col_a, col_b = st.columns([1, 1])
+        with col_a:
+            if st.button("✔ Apply AI fields", key="apply_ai", type="primary", use_container_width=True):
+                if not ai_response.strip():
+                    st.warning("Paste a JSON response first.")
+                else:
+                    parsed = ai_helper.extract_json_from_response(ai_response)
+                    if not parsed:
+                        st.error(
+                            "❌ Could not parse JSON from the response. "
+                            "Make sure the AI returned a valid JSON object."
+                        )
+                    else:
+                        clean, warnings = ai_helper.validate_and_normalize(parsed)
+                        merged = core.merge_ai_fields(
+                            st.session_state.site_data, clean
+                        )
+                        st.session_state.site_data = merged
+                        st.session_state["ai_applied"] = True
+                        persist()
+
+                        if warnings:
+                            st.warning(
+                                f"⚠️ Applied with {len(warnings)} warnings:\n\n"
+                                + "\n".join(f"- {w}" for w in warnings)
+                            )
+                        st.success("✅ AI fields applied")
+                        st.rerun()
+
+        with col_b:
+            if st.button("🗑 Clear response", key="clear_ai", use_container_width=True):
+                st.session_state.pop("ai_json_input", None)
+                st.rerun()
+
+    # ─── Status ───
+    if st.session_state.get("ai_applied"):
+        st.success("🤖 AI fields applied — view them in the preview below.")
+
+    with st.expander("🔍 Preview merged site data", expanded=False):
+        display_keys = [
+            ("site_class",         "Site Class"),
+            ("room_access",        "Room Access"),
+            ("cabin_location",     "Cabin Location"),
+            ("flood_history",      "Flood History"),
+            ("hauling_remarks",    "Hauling Remarks"),
+            ("site_profile",       "Site Profile"),
+            ("site_key_location",  "Site Key Location"),
+            ("site_owner",         "Site Owner"),
+            ("site_security",      "Site Security"),
+            ("work_permit",        "Work Permit"),
+            ("access_requirement", "Access Requirement"),
+            ("site_type",          "Site Type"),
+            ("site_accessible",    "Site Accessible"),
+            ("no_bridge",          "No. of Bridge"),
+            ("foot_trail",         "Foot Trail"),
+        ]
+        for key, label in display_keys:
+            val = st.session_state.site_data.get(key)
+            if val not in (None, "", [], {}):
+                st.write(f"**{label}:** `{val}`")
+
+
+# ═════════════════════════════════════════════════════════════
+# STEP 4 — Ericsson TSSR (image extraction)
+# ═════════════════════════════════════════════════════════════
+
+if st.session_state.site_data:
+    st.divider()
+    st.subheader("4 · Ericsson TSSR Images")
+    st.caption("Upload the Ericsson TSSR PDF to auto-extract images.")
 
     if st.session_state.ericsson_docx is None:
         uploaded_pdf = st.file_uploader(
-            "Upload Ericsson TSSR PDF to extract images",
+            "Upload Ericsson TSSR PDF",
             type=["pdf"],
             key="ericsson_pdf_upload",
         )
@@ -376,12 +476,12 @@ if st.session_state.site_data:
 
 
 # ═════════════════════════════════════════════════════════════
-# STEP 4 — Images (grid + dialog)
+# STEP 5 — Images (grid + dialog)
 # ═════════════════════════════════════════════════════════════
 
 if st.session_state.site_data:
     st.divider()
-    st.subheader("4 · Images")
+    st.subheader("5 · Images")
 
     filled = sum(
         1 for slot, _ in IMAGE_SLOTS
@@ -420,12 +520,12 @@ if st.session_state.site_data:
 
 
 # ═════════════════════════════════════════════════════════════
-# STEP 5 — Materials
+# STEP 6 — Materials
 # ═════════════════════════════════════════════════════════════
 
 if st.session_state.site_data:
     st.divider()
-    st.subheader("5 · Materials / Inventory")
+    st.subheader("6 · Materials / Inventory")
 
     MATERIALS = [
         ("mat_grounding",  "Grounding (OLT MF-2 to Existing ground) #8", "m",   "10"),
@@ -465,12 +565,12 @@ if st.session_state.site_data:
 
 
 # ═════════════════════════════════════════════════════════════
-# STEP 6 — Generate
+# STEP 7 — Generate
 # ═════════════════════════════════════════════════════════════
 
 if st.session_state.site_data:
     st.divider()
-    st.subheader("6 · Generate Nokia TSSR")
+    st.subheader("7 · Generate Nokia TSSR")
 
     if not TEMPLATE_PATH.exists():
         st.error(f"❌ Template not found: `{TEMPLATE_PATH}`")
@@ -530,21 +630,22 @@ if st.session_state.site_data:
 
 with st.sidebar:
     st.markdown("### About")
-    st.markdown("Excel masterlist + Ericsson TSSR → Nokia TSSR DOCX")
+    st.markdown("Excel masterlist + AI + Ericsson TSSR → Nokia TSSR DOCX")
 
     st.markdown("---")
     st.markdown("**Workflow**")
     st.markdown(
         "1. Masterlist auto-loads\n"
         "2. Select a PLAID\n"
-        "3. Upload Ericsson TSSR\n"
-        "4. Per image: upload, paste, or pick\n"
-        "5. Fill materials\n"
-        "6. Generate & download"
+        "3. (Optional) AI-assisted fields\n"
+        "4. Upload Ericsson TSSR for images\n"
+        "5. Fill 18 image slots\n"
+        "6. Fill materials\n"
+        "7. Generate & download"
     )
 
     st.markdown("---")
-    st.caption("v0.5 · Image grid + Ctrl+V paste")
+    st.caption("v0.6 · AI-assisted fields")
 
     if st.session_state.get("selected_plaid"):
         st.success(f"Working on: **{st.session_state.selected_plaid}**")
@@ -556,6 +657,7 @@ with st.sidebar:
     with st.expander("🔍 Session info"):
         st.write("**Workdir:**", st.session_state.workdir)
         st.write("**Selected PLAID:**", st.session_state.selected_plaid)
+        st.write("**AI applied:**", st.session_state.get("ai_applied", False))
         st.write("**Images set:**", len(st.session_state.image_map))
         st.write("**Materials set:**", len(st.session_state.materials))
         st.write("**Extracted imgs:**", len(st.session_state.ericsson_images))
