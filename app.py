@@ -24,18 +24,10 @@ from components.paste_image import paste_image, save_pasted_image
 from towercо_rules import get_permits_for_towerco
 
 
-# ═════════════════════════════════════════════════════════════
-# Path resolution
-# ═════════════════════════════════════════════════════════════
-
 APP_DIR = Path(__file__).resolve().parent
 MASTERLIST_PATH = APP_DIR / "data" / "MINDANAO_Site_Activity_Monitoring_OLT_PROJECT.xlsx"
 TEMPLATE_PATH   = APP_DIR / "templates" / "nokia_template.docx"
 
-
-# ═════════════════════════════════════════════════════════════
-# Page config
-# ═════════════════════════════════════════════════════════════
 
 st.set_page_config(
     page_title="TSSR Automator",
@@ -43,10 +35,6 @@ st.set_page_config(
     layout="wide",
 )
 
-
-# ═════════════════════════════════════════════════════════════
-# Session state — restore on startup
-# ═════════════════════════════════════════════════════════════
 
 DEFAULTS = {
     "workdir": None,
@@ -69,31 +57,22 @@ if "_restored" not in st.session_state:
     for k, v in saved.items():
         if k in DEFAULTS:
             st.session_state[k] = v
-
     saved_workdir = sm.load_workdir()
     if saved_workdir and Path(saved_workdir).exists():
         st.session_state.workdir = saved_workdir
-
     st.session_state["_restored"] = True
 
 
-# ═════════════════════════════════════════════════════════════
-# Helpers
-# ═════════════════════════════════════════════════════════════
-
 def persist():
-    """Save current session state to disk."""
     sm.save_state(dict(st.session_state))
     if st.session_state.workdir:
         sm.save_workdir(st.session_state.workdir)
 
 
 def reset_to_new_site():
-    """Clear everything except masterlist."""
     if st.session_state.workdir and Path(st.session_state.workdir).exists():
         shutil.rmtree(st.session_state.workdir, ignore_errors=True)
     sm.clear_state()
-
     for k, v in DEFAULTS.items():
         if k == "masterlist":
             continue
@@ -103,7 +82,6 @@ def reset_to_new_site():
             st.session_state[k] = False
         else:
             st.session_state[k] = v
-
     st.session_state["_restored"] = True
 
 
@@ -122,10 +100,6 @@ def save_upload(uploaded_file) -> str:
     dest.write_bytes(uploaded_file.getbuffer())
     return str(dest)
 
-
-# ═════════════════════════════════════════════════════════════
-# Image slot definitions
-# ═════════════════════════════════════════════════════════════
 
 IMAGE_SLOTS = [
     ("img_vicinity_map",           "Vicinity Map"),
@@ -149,24 +123,14 @@ IMAGE_SLOTS = [
 ]
 
 
-# ═════════════════════════════════════════════════════════════
-# Image editor dialog
-# ═════════════════════════════════════════════════════════════
-
 @st.dialog("Image slot", width="large")
 def image_dialog(slot: str, label: str, extracted: list[str]):
-    """Modal dialog for editing one image slot."""
     st.markdown(f"### {label}")
     st.caption(f"Slot key: `{slot}`")
-
     current = st.session_state.image_map.get(slot, "")
     if current and Path(current).exists():
         st.image(current, use_container_width=True)
-        if st.button(
-            "🗑 Remove current image",
-            key=f"d_del_{slot}",
-            use_container_width=True,
-        ):
+        if st.button("🗑 Remove current image", key=f"d_del_{slot}", use_container_width=True):
             st.session_state.image_map.pop(slot, None)
             persist()
             st.rerun()
@@ -180,13 +144,10 @@ def image_dialog(slot: str, label: str, extracted: list[str]):
         label_visibility="collapsed",
     )
 
-    # ─── Upload ───
     if method == "📁 Upload":
         upload = st.file_uploader(
-            "Upload image",
-            type=["png", "jpg", "jpeg"],
-            key=f"d_up_{slot}",
-            label_visibility="collapsed",
+            "Upload image", type=["png", "jpg", "jpeg"],
+            key=f"d_up_{slot}", label_visibility="collapsed",
         )
         if upload:
             path = save_upload(upload)
@@ -194,12 +155,8 @@ def image_dialog(slot: str, label: str, extracted: list[str]):
             persist()
             st.rerun()
 
-    # ─── Paste (Ctrl+V) ───
     elif method == "📋 Paste (Ctrl+V)":
-        st.caption(
-            "**Click the dashed box below, then press Ctrl+V.** "
-            "Or drag an image onto it."
-        )
+        st.caption("**Click the dashed box below, then press Ctrl+V.**")
         result = paste_image(key=f"d_paste_{slot}")
         if result:
             cache_key = f"_pasted_{slot}_{result.get('size', 0)}"
@@ -213,7 +170,6 @@ def image_dialog(slot: str, label: str, extracted: list[str]):
                 persist()
                 st.rerun()
 
-    # ─── Pick from TSSR ───
     elif method == "🖼 Pick from TSSR":
         if not extracted:
             st.warning("No extracted images. Upload an Ericsson TSSR first.")
@@ -242,36 +198,20 @@ def image_dialog(slot: str, label: str, extracted: list[str]):
                             st.rerun()
 
 
-# ═════════════════════════════════════════════════════════════
-# Header
-# ═════════════════════════════════════════════════════════════
-
 col_a, col_b, col_c = st.columns([3, 1, 1])
 with col_a:
     st.title("📡 TSSR Automator")
     st.caption("Excel masterlist + AI + Ericsson TSSR → Nokia TSSR DOCX")
 with col_b:
-    if st.button(
-        "🆕 New Site",
-        use_container_width=True,
-        help="Clear current work and start over",
-    ):
+    if st.button("🆕 New Site", use_container_width=True):
         reset_to_new_site()
         st.rerun()
 with col_c:
-    if st.button(
-        "↺ Clear All",
-        use_container_width=True,
-        help="Reset everything including masterlist",
-    ):
+    if st.button("↺ Clear All", use_container_width=True):
         reset_to_new_site()
         st.session_state.masterlist = None
         st.rerun()
 
-
-# ═════════════════════════════════════════════════════════════
-# STEP 1 — Masterlist
-# ═════════════════════════════════════════════════════════════
 
 st.subheader("1 · Site Masterlist")
 
@@ -289,10 +229,6 @@ if st.session_state.masterlist is None:
 else:
     st.success(f"✅ Loaded: `{MASTERLIST_PATH.name}`")
 
-
-# ═════════════════════════════════════════════════════════════
-# STEP 2 — Select Site
-# ═════════════════════════════════════════════════════════════
 
 st.divider()
 st.subheader("2 · Select Site")
@@ -336,36 +272,24 @@ if st.session_state.site_data:
         st.text_input("FO Mobile", site.get("fo_mobile", ""), disabled=True, key="disp_fo_mobile")
 
 
-# ═════════════════════════════════════════════════════════════
-# STEP 3 — AI-Assisted Fields
-# ═════════════════════════════════════════════════════════════
-
 if st.session_state.site_data:
     st.divider()
     st.subheader("3 · AI-Assisted Fields (optional)")
     st.caption(
-        "Fields not in the masterlist can be filled with AI help. "
         "Copy the prompt below, feed it to **Gemini** or **ChatGPT** "
         "along with the Ericsson TSSR PDF, then paste the JSON response back."
     )
 
-    # ─── Step 1: Prompt ───
     with st.expander("📋 Step 1 — Copy this prompt", expanded=False):
         prompt_text = ai_helper.build_prompt()
         st.code(prompt_text, language="text")
-        st.caption(
-            "💡 **How to use in Gemini:** "
-            "Attach the Ericsson TSSR PDF → paste this prompt → send. "
-            "Copy the JSON Gemini returns."
-        )
 
-    # ─── Step 2: Paste response ───
     with st.expander("📥 Step 2 — Paste AI response", expanded=not st.session_state.get("ai_applied", False)):
         ai_response = st.text_area(
             "Paste the AI's JSON response here:",
             height=200,
             key="ai_json_input",
-            placeholder='{"site_class": "C3", "room_access": "Outdoor", ...}',
+            placeholder='{"site_class": "C3", ...}',
         )
 
         col_a, col_b = st.columns([1, 1])
@@ -376,10 +300,7 @@ if st.session_state.site_data:
                 else:
                     parsed = ai_helper.extract_json_from_response(ai_response)
                     if not parsed:
-                        st.error(
-                            "❌ Could not parse JSON from the response. "
-                            "Make sure the AI returned a valid JSON object."
-                        )
+                        st.error("❌ Could not parse JSON from the response.")
                     else:
                         clean, warnings = ai_helper.validate_and_normalize(parsed)
                         merged = core.merge_ai_fields(
@@ -402,15 +323,11 @@ if st.session_state.site_data:
                 st.session_state.pop("ai_json_input", None)
                 st.rerun()
 
-    # ─── Status ───
     if st.session_state.get("ai_applied"):
-        st.success("🤖 AI fields applied — view them in the preview below.")
+        st.success("🤖 AI fields applied")
 
-    # ─── Preview merged site data (with derived towercо fields) ───
     with st.expander("🔍 Preview merged site data", expanded=False):
         site = st.session_state.site_data
-
-        # Derive permits from towercо
         towercо = site.get("towerco", "")
         permits = get_permits_for_towerco(towercо)
 
@@ -438,10 +355,6 @@ if st.session_state.site_data:
                 st.write(f"**{label}:** `{val}`")
 
 
-# ═════════════════════════════════════════════════════════════
-# STEP 4 — Ericsson TSSR (image extraction)
-# ═════════════════════════════════════════════════════════════
-
 if st.session_state.site_data:
     st.divider()
     st.subheader("4 · Ericsson TSSR Images")
@@ -463,7 +376,6 @@ if st.session_state.site_data:
                 t0 = time.time()
                 docx_path = core.pdf_to_docx(str(pdf_path), str(workdir))
                 st.write(f"✅ Converted in {time.time() - t0:.1f}s")
-
                 st.write("Extracting images…")
                 imgs = core.extract_images(docx_path, str(workdir / "images"))
                 st.session_state.ericsson_images = imgs
@@ -485,10 +397,6 @@ if st.session_state.site_data:
             st.rerun()
 
 
-# ═════════════════════════════════════════════════════════════
-# STEP 5 — Images (grid + dialog)
-# ═════════════════════════════════════════════════════════════
-
 if st.session_state.site_data:
     st.divider()
     st.subheader("5 · Images")
@@ -504,7 +412,6 @@ if st.session_state.site_data:
     )
 
     extracted = st.session_state.ericsson_images
-
     COLS = 3
     rows = (len(IMAGE_SLOTS) + COLS - 1) // COLS
 
@@ -528,10 +435,6 @@ if st.session_state.site_data:
                 ):
                     image_dialog(slot, label, extracted)
 
-
-# ═════════════════════════════════════════════════════════════
-# STEP 6 — Materials
-# ═════════════════════════════════════════════════════════════
 
 if st.session_state.site_data:
     st.divider()
@@ -573,10 +476,6 @@ if st.session_state.site_data:
         persist()
         st.success("Saved")
 
-
-# ═════════════════════════════════════════════════════════════
-# STEP 7 — Generate
-# ═════════════════════════════════════════════════════════════
 
 if st.session_state.site_data:
     st.divider()
@@ -626,22 +525,15 @@ if st.session_state.site_data:
             "⬇️ Download DOCX",
             data=Path(out_path).read_bytes(),
             file_name=out_name,
-            mime=(
-                "application/vnd.openxmlformats-officedocument"
-                ".wordprocessingml.document"
-            ),
+            mime=("application/vnd.openxmlformats-officedocument"
+                  ".wordprocessingml.document"),
             use_container_width=True,
         )
 
 
-# ═════════════════════════════════════════════════════════════
-# Sidebar
-# ═════════════════════════════════════════════════════════════
-
 with st.sidebar:
     st.markdown("### About")
     st.markdown("Excel masterlist + AI + Ericsson TSSR → Nokia TSSR DOCX")
-
     st.markdown("---")
     st.markdown("**Workflow**")
     st.markdown(
@@ -653,7 +545,6 @@ with st.sidebar:
         "6. Fill materials\n"
         "7. Generate & download"
     )
-
     st.markdown("---")
     st.caption("v0.7 · towercо-derived permits")
 
