@@ -40,10 +40,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── DEBUG: show full tracebacks instead of "redacted" messages ──
-# Remove or set to False once the load_calc issue is fixed.
-st.set_option("client.showErrorDetails", True)
-
 
 DEFAULTS = {
     "workdir": None,
@@ -464,9 +460,28 @@ if st.session_state.site_data:
 
 if st.session_state.site_data:
     st.divider()
+
+    # ── DIAGNOSTIC: prove which load_calc_page.py is actually imported ──
     try:
+        import importlib
         import load_calc_page
+        importlib.reload(load_calc_page)
+
+        st.caption(
+            f"🔧 `load_calc_page` loaded from: `{getattr(load_calc_page, '__file__', '?')}`"
+        )
+        public = [x for x in dir(load_calc_page) if not x.startswith("_")]
+        st.caption(f"🔧 public names: `{public}`")
+
+        if not hasattr(load_calc_page, "render"):
+            st.error(
+                "❌ `load_calc_page` has no `render` function. "
+                "The file on the server is stale or wrong."
+            )
+            st.stop()
+
         load_calc_page.render(ensure_workdir, persist)
+
     except ImportError as e:
         st.warning(
             f"⚠️ Load calculator module not available: {e}\n\n"
@@ -475,14 +490,9 @@ if st.session_state.site_data:
             "`data/load_calculation.xlsx`."
         )
     except Exception as e:
-        # ── DEBUG: surface the real error instead of a redacted one ──
         st.error(f"❌ Load calculator crashed: {type(e).__name__}: {e}")
         with st.expander("🔎 Full traceback", expanded=True):
             st.code(traceback.format_exc())
-        # Do NOT re-raise — let the rest of the app continue rendering.
-        # Remove the `raise` below if you want Streamlit to keep showing
-        # the red "This app has encountered an error" banner.
-        # raise
 
 
 # ═════════════════════════════════════════════════════════════
@@ -883,7 +893,6 @@ if st.session_state.site_data:
                   ".wordprocessingml.document"),
             use_container_width=True,
         )
-
 
 # ═════════════════════════════════════════════════════════════
 # Sidebar
