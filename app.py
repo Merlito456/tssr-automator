@@ -1,8 +1,9 @@
 # app.py
 """
-TSSR Automator v0.8
+TSSR Automator v0.9
 - Excel masterlist (auto-loaded)
 - AI-assisted field extraction via Gemini/ChatGPT
+- AI-assisted load calculation (C7 block, RS1–RS4)
 - Ericsson TSSR PDF (image extraction)
 - Hardcoded work_permit + access_requirement from towerco rules
 - Map + Street View capture (no API key)
@@ -50,6 +51,9 @@ DEFAULTS = {
     "materials": {},
     "selected_plaid": "",
     "ai_applied": False,
+    # --- AI Load Calculator ---
+    "load_calc_data": None,
+    "load_calc_rs": "RS1 — Rectifier 1",
 }
 
 for k, v in DEFAULTS.items():
@@ -447,6 +451,24 @@ if st.session_state.site_data:
         for label, val in display_fields:
             if val not in (None, "", [], {}):
                 st.write(f"**{label}:** `{val}`")
+
+
+# ═════════════════════════════════════════════════════════════
+# STEP 3.2 — AI Load Calculator (C7 block)
+# ═════════════════════════════════════════════════════════════
+
+if st.session_state.site_data:
+    st.divider()
+    try:
+        import load_calc_page
+        load_calc_page.render(ensure_workdir, persist)
+    except ImportError as e:
+        st.warning(
+            f"⚠️ Load calculator module not available: {e}\n\n"
+            "Create `load_calc_page.py`, `load_calc_helper.py`, "
+            "and `load_calc_render.py`, then place "
+            "`data/load_calculation.xlsx`."
+        )
 
 
 # ═════════════════════════════════════════════════════════════
@@ -862,14 +884,15 @@ with st.sidebar:
         "1. Masterlist auto-loads\n"
         "2. Select a PLAID\n"
         "3. (Optional) AI-assisted fields\n"
-        "4. Capture map + street view\n"
-        "5. Upload Ericsson TSSR for images\n"
-        "6. Fill 18 image slots\n"
-        "7. Fill materials\n"
-        "8. Generate & download"
+        "4. (Optional) AI load calculator (C7)\n"
+        "5. Capture map + street view\n"
+        "6. Upload Ericsson TSSR for images\n"
+        "7. Fill image slots\n"
+        "8. Fill materials\n"
+        "9. Generate & download"
     )
     st.markdown("---")
-    st.caption("v0.8 · map + street view")
+    st.caption("v0.9 · AI load calculator")
 
     if st.session_state.get("selected_plaid"):
         st.success(f"Working on: **{st.session_state.selected_plaid}**")
@@ -882,6 +905,8 @@ with st.sidebar:
         st.write("**Workdir:**", st.session_state.workdir)
         st.write("**Selected PLAID:**", st.session_state.selected_plaid)
         st.write("**AI applied:**", st.session_state.get("ai_applied", False))
+        st.write("**Load calc RS:**", st.session_state.get("load_calc_rs", "—"))
+        st.write("**Load calc data:**", "✓" if st.session_state.get("load_calc_data") else "—")
         st.write("**Images set:**", len(st.session_state.image_map))
         st.write("**Materials set:**", len(st.session_state.materials))
         st.write("**Extracted imgs:**", len(st.session_state.ericsson_images))
