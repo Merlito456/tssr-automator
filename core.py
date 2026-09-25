@@ -10,9 +10,8 @@ User uploads     -> optional image overrides
 Work permit + Access requirement are HARDCODED from towercо rules
 (see permit_rules.py) - not from AI.
 
-Most images are STRETCHED to fill their box (cropped to match the
-cell's aspect ratio). Load schedule and load calculation images are
-resized proportionally to preserve numeric data.
+Images are STRETCHED to fill their cell exactly (no gaps).
+RS load schedules / calculations are resized proportionally.
 """
 
 from __future__ import annotations
@@ -131,18 +130,24 @@ def make_grid(images: list[str], max_width: int = 1200,
 
 
 # =============================================================
-# 3b. Crop-to-aspect helper (for stretch-to-box images)
+# 3b. Stretch-to-aspect helper (fill cell completely)
 # =============================================================
 
-def crop_to_aspect(src_path: str, dest_path: str, target_aspect: float) -> str:
+def stretch_to_aspect(
+    src_path: str,
+    dest_path: str,
+    target_aspect: float,
+) -> str:
     """
-    Crop an image to match the target aspect ratio (width / height).
-    Center-crops. Used for STRETCH-to-box images.
+    Force an image into a target aspect ratio (width / height) by
+    stretching it. Content is preserved (no crop), but the image
+    may look slightly distorted — that's the trade-off for
+    filling the cell without gaps.
     """
     try:
         img = Image.open(src_path).convert("RGB")
     except Exception as e:
-        print(f"[crop_to_aspect] Could not open {src_path}: {e}")
+        print(f"[stretch_to_aspect] Could not open {src_path}: {e}")
         return src_path
 
     w, h = img.size
@@ -151,27 +156,25 @@ def crop_to_aspect(src_path: str, dest_path: str, target_aspect: float) -> str:
 
     current_aspect = w / h
 
-    # Already close — no crop needed
+    # Close enough — no change
     if abs(current_aspect - target_aspect) < 0.02:
         dest = Path(dest_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        img.save(dest, quality=88)
+        img.save(dest, quality=90)
         return str(dest)
 
     if current_aspect > target_aspect:
-        # Image too wide → crop left/right
-        new_w = int(h * target_aspect)
-        x_offset = (w - new_w) // 2
-        img = img.crop((x_offset, 0, x_offset + new_w, h))
-    else:
-        # Image too tall → crop top/bottom
+        # Image is too wide → grow the height
         new_h = int(w / target_aspect)
-        y_offset = (h - new_h) // 2
-        img = img.crop((0, y_offset, w, y_offset + new_h))
+        img = img.resize((w, new_h), Image.LANCZOS)
+    else:
+        # Image is too tall → grow the width
+        new_w = int(h * target_aspect)
+        img = img.resize((new_w, h), Image.LANCZOS)
 
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    img.save(dest, quality=88)
+    img.save(dest, quality=90)
     return str(dest)
 
 
@@ -432,7 +435,7 @@ IMAGE_WIDTHS_MM = {
     "equipment_room_layout_img":   Mm(170),
     "equipment_cable_routing_img": Mm(170),
 
-    # RS load schedules (proportional, no crop)
+    # RS load schedules (proportional, no stretch)
     "RS1_load_sched_img":          Mm(130),
     "RS1_load_calc_img":           Mm(130),
     "RS2_load_sched_img":          Mm(130),
@@ -455,32 +458,32 @@ IMAGE_WIDTHS_MM = {
 }
 
 
-# Aspect ratios for STRETCH-to-box slots.
-# Slots NOT in this dict get proportional resize only (no crop).
-# Match these to the actual Word cell width/height in your template.
+# Target aspect ratios (width / height) for stretched slots.
+# Adjust these to match your actual cell dimensions in Word.
+# Slots NOT in this dict get proportional resize (no stretch).
 STRETCH_ASPECTS = {
-    # Full width — cell height ~100mm
-    "img_vicinity_map":            1.70,   # 170 / 100
-    "equipment_room_layout_img":   1.70,
-    "equipment_cable_routing_img": 1.70,
+    # Full width
+    "img_vicinity_map":            1.90,
+    "equipment_room_layout_img":   1.50,
+    "equipment_cable_routing_img": 1.50,
 
-    # Half width — cell height ~60mm
-    "img_site_photo_1":            1.40,   # 85 / 60
-    "img_site_photo_2":            1.40,
-    "img_site_photo_3":            1.40,
-    "img_site_photo_4":            1.40,
-    "img_olt_existing":            1.40,
-    "img_olt_proposed":            1.40,
-    "RS1_tapping_img":             1.40,
-    "RS2_tapping_img":             1.40,
+    # Half width
+    "img_site_photo_1":            1.55,
+    "img_site_photo_2":            1.55,
+    "img_site_photo_3":            1.55,
+    "img_site_photo_4":            1.55,
+    "img_olt_existing":            1.55,
+    "img_olt_proposed":            1.55,
+    "RS1_tapping_img":             1.55,
+    "RS2_tapping_img":             1.55,
 
-    # Third width — cell height ~40mm
+    # Third width
     "transport_existing_1":        1.40,
     "transport_existing_2":        1.40,
     "transport_existing_3":        1.40,
 
-    # RS1/RS2 load sched + load calc intentionally NOT listed here.
-    # They render proportionally — no crop — to preserve numeric data.
+    # RS load sched / calc intentionally not listed.
+    # They resize proportionally to preserve numeric data.
 }
 
 
@@ -491,22 +494,22 @@ def generate_nokia_tssr(
     image_widths: dict | None = None,
 ) -> str:
     """
-    Render the Nokia template with the given context.
+    Render the Nokia template.
 
-    - Most images are STRETCHED to fill their box (cropped to match
-      the cell's aspect ratio, then inserted at the cell width).
-    - Load schedule and load calculation images are RESIZED
-      proportionally — no crop — so numeric tables stay intact.
+    Non-sched images are STRETCHED to fill their cell exactly
+    (no gaps), even if the ratio is slightly distorted.
+
+    Load schedule and load calculation images are RESIZED
+    proportionally to keep numeric tables intact.
     """
     doc = DocxTemplate(template_path)
     widths = {**IMAGE_WIDTHS_MM, **(image_widths or {})}
 
-    # Directory for stretched (cropped) images
+    # Where stretched images get saved
     stretched_dir = Path(output_path).parent / "_stretched"
 
     rendered = {}
     for key, val in context.items():
-        # Only process string paths that exist and have a target width
         if not (isinstance(val, str) and val and Path(val).exists() and key in widths):
             rendered[key] = val
             continue
@@ -515,13 +518,13 @@ def generate_nokia_tssr(
             aspect = STRETCH_ASPECTS.get(key)
 
             if aspect:
-                # STRETCH mode: crop to aspect, then insert
+                # STRETCH mode: force into the target aspect ratio
                 stretched_dir.mkdir(parents=True, exist_ok=True)
-                dest = stretched_dir / f"{key}_stretch.jpg"
-                crop_to_aspect(val, str(dest), aspect)
+                dest = stretched_dir / f"{key}_stretched.jpg"
+                stretch_to_aspect(val, str(dest), aspect)
                 rendered[key] = InlineImage(doc, str(dest), width=widths[key])
             else:
-                # RESIZE mode: proportional, no crop
+                # RESIZE mode: proportional, no distortion
                 rendered[key] = InlineImage(doc, val, width=widths[key])
 
         except Exception as e:
