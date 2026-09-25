@@ -1,9 +1,10 @@
 # core.py
 """
-TSSR Automator — core pipeline (dual source).
+TSSR Automator — core pipeline (triple source).
 
-Excel masterlist → site identity
-Ericsson TSSR    → images + supplementary fields
+Excel masterlist → site identity (authoritative)
+AI extraction    → supplementary fields (fills gaps)
+Ericsson TSSR    → images + fallback fields
 User uploads     → optional image overrides
 """
 
@@ -23,12 +24,14 @@ from pdf2docx import Converter
 from PIL import Image
 
 
-# ─────────────────────────────────────────────────────────────
-# 1. PDF → DOCX (unchanged from v0.1)
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+# 1. PDF → DOCX
+# ═════════════════════════════════════════════════════════════
 
 def pdf_to_docx(pdf_path: str, out_dir: str) -> str:
-    out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    """Convert PDF to DOCX using LibreOffice, with pdf2docx as fallback."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = Path(pdf_path)
     target = out_dir / f"{pdf_path.stem}.docx"
 
@@ -55,12 +58,14 @@ def pdf_to_docx(pdf_path: str, out_dir: str) -> str:
     return str(target)
 
 
-# ─────────────────────────────────────────────────────────────
-# 2. Extract images from the Ericsson DOCX
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+# 2. Extract images from DOCX
+# ═════════════════════════════════════════════════════════════
 
 def extract_images(docx_path: str, out_dir: str) -> list[str]:
-    out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    """Extract all images from word/media/ inside a DOCX."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     images = []
     with zipfile.ZipFile(docx_path) as z:
         for name in sorted(z.namelist()):
@@ -71,12 +76,13 @@ def extract_images(docx_path: str, out_dir: str) -> list[str]:
     return images
 
 
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
 # 3. Grid composer for multi-image slots
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
 
 def make_grid(images: list[str], max_width: int = 1200,
               cols: int = 2, padding: int = 10) -> str:
+    """Combine multiple images into a single grid image."""
     if not images:
         return ""
     if len(images) == 1:
@@ -115,18 +121,51 @@ def make_grid(images: list[str], max_width: int = 1200,
     return str(out)
 
 
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
 # 4. Checkbox helper
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
 
 def cb(flag: bool) -> str:
     """Return a checked or unchecked box character."""
     return "☑" if flag else "☐"
 
 
-# ─────────────────────────────────────────────────────────────
-# 5. Build the docxtpl context from Excel + Ericsson
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+# 5. Merge AI-extracted fields into site data
+# ═════════════════════════════════════════════════════════════
+
+def merge_ai_fields(site: dict, ai_fields: dict) -> dict:
+    """
+    Merge AI-extracted fields into the site dict.
+    Priority: Excel > AI > existing site dict > empty.
+
+    Only fills a field if it's missing or empty in the current site dict.
+    """
+    merged = dict(site)
+
+    for key, val in ai_fields.items():
+        # Skip if the site dict already has a non-empty value
+        existing = merged.get(key)
+        if existing not in ("", None, [], {}):
+            continue
+
+        # Normalize the AI value
+        if isinstance(val, str):
+            clean_val = val.strip()
+            if clean_val:
+                merged[key] = clean_val
+        elif isinstance(val, list):
+            if val:  # non-empty list
+                merged[key] = val
+        elif isinstance(val, bool):
+            merged[key] = val
+
+    return merged
+
+
+# ═════════════════════════════════════════════════════════════
+# 6. Build the docxtpl context
+# ═════════════════════════════════════════════════════════════
 
 def build_context(
     site: dict,
@@ -134,97 +173,143 @@ def build_context(
     images: dict,
 ) -> dict:
     """
-    Merge site data (Excel), Ericsson TSSR values, and image paths
-    into a single dict that matches the template's tag contract.
+    Merge site data (Excel + AI), Ericsson TSSR values, and image paths
+    into a single dict matching the template's tag contract.
 
-    Priority: Excel wins for identity fields; Ericsson fills gaps.
+    Priority chain per field:
+      1. site dict (Excel + AI merged)
+      2. ericsson_fields (parsed TSSR)
+      3. hardcoded defaults
     """
     ctx = {}
 
-    # ─── Identity (Excel wins) ─────────────────────────────
-    ctx["site_id"]      = site.get("site_id") or ericsson_fields.get("site_id", "")
-    ctx["site_name"]    = site.get("site_name") or ericsson_fields.get("site_name", "")
-    ctx["region"]       = site.get("region") or ericsson_fields.get("region", "MINDANAO")
-    ctx["site_address"] = site.get("site_add") or compose_address_from(site)
-    ctx["site_coords"]  = site.get("site_coords") or compose_coords_from(site)
-    ctx["towercо"]      = site.get("towerco") or ericsson_fields.get("towerco", "")
+    def pick(*sources, default=""):
+        """Return the first non-empty source value."""
+        for s in sources:
+            if s not in ("", None, [], {}):
+                return s
+        return default
 
-    # ─── Contact (Excel wins; FO = column S, phone = column U) ───
-    ctx["site_contact_person"] = site.get("site_contact_person") or ""
-    ctx["site_contact_mobile"] = site.get("site_contact_mobile") or ""
-    ctx["fo_name"]             = site.get("fo_name") or ""
-    ctx["fo_mobile"]           = site.get("fo_mobile") or ""
+    # ─── Identity ──────────────────────────────────────────
+    ctx["site_id"]      = pick(site.get("site_id"),      ericsson_fields.get("site_id"))
+    ctx["site_name"]    = pick(site.get("site_name"),    ericsson_fields.get("site_name"))
+    ctx["region"]       = pick(site.get("region"),       ericsson_fields.get("region"), default="MINDANAO")
+    ctx["site_address"] = pick(site.get("site_add"),     site.get("site_address"), compose_address_from(site))
+    ctx["site_coords"]  = pick(site.get("site_coords"),  compose_coords_from(site))
+    ctx["towercо"]      = pick(site.get("towerco"),      ericsson_fields.get("towerco"))
 
-    # ─── Lessor (usually N/A) ──────────────────────────────
-    ctx["lessor_details"]      = ericsson_fields.get("lessor_details", "N/A")
-    ctx["lessor_mobile"]       = ericsson_fields.get("lessor_mobile", "N/A")
+    # ─── Contact (FO = Column S, phone = Column U) ─────────
+    ctx["site_contact_person"] = pick(site.get("site_contact_person"), site.get("fo_name"))
+    ctx["site_contact_mobile"] = pick(site.get("site_contact_mobile"), site.get("fo_mobile"))
+    ctx["fo_name"]             = pick(site.get("fo_name"))
+    ctx["fo_mobile"]           = pick(site.get("fo_mobile"))
+
+    # ─── Lessor ────────────────────────────────────────────
+    ctx["lessor_details"] = pick(site.get("lessor_details"), ericsson_fields.get("lessor_details"), default="N/A")
+    ctx["lessor_mobile"]  = pick(site.get("lessor_mobile"),  ericsson_fields.get("lessor_mobile"),  default="N/A")
 
     # ─── TCO / Site class ──────────────────────────────────
-    ctx["tco_name"]            = site.get("towerco", "")
-    ctx["site_class"]          = ericsson_fields.get("site_class", "")
+    ctx["tco_name"]   = pick(site.get("towerco"), ericsson_fields.get("tco_name"))
+    ctx["site_class"] = pick(site.get("site_class"), ericsson_fields.get("site_class"))
 
     # ─── Site type checkboxes ──────────────────────────────
-    # Default: assume Greenfield/Outdoor if Ericsson says "outdoor"
-    room_access = ericsson_fields.get("room_access", "").lower()
-    ctx["site_type_greenfield"] = cb("outdoor" in room_access or True)
-    ctx["site_type_street"]     = cb("street" in room_access)
-    ctx["site_type_indoor"]     = cb("indoor" in room_access)
-    ctx["site_type_others"]     = cb(False)
+    site_type = (
+        site.get("site_type")
+        or ericsson_fields.get("site_type")
+        or ""
+    ).strip().lower()
+
+    room_access = pick(
+        site.get("room_access"),
+        ericsson_fields.get("room_access"),
+    ).lower()
+
+    # Fallback inference from room_access
+    if not site_type:
+        if "outdoor" in room_access or not room_access:
+            site_type = "greenfield"
+        elif "indoor" in room_access:
+            site_type = "indoor"
+        elif "street" in room_access:
+            site_type = "street cabinet"
+
+    ctx["site_type_greenfield"] = cb("greenfield" in site_type or "outdoor" in site_type)
+    ctx["site_type_street"]     = cb("street" in site_type)
+    ctx["site_type_indoor"]     = cb("indoor" in site_type)
+    ctx["site_type_others"]     = cb(
+        site_type not in ("greenfield", "outdoor", "street cabinet", "indoor")
+        and site_type != ""
+    )
 
     # ─── Site owner checkboxes ─────────────────────────────
-    owner = ericsson_fields.get("owner", "").upper()
+    owner = pick(
+        site.get("site_owner"),
+        ericsson_fields.get("owner"),
+    ).upper()
+
     ctx["owner_globe"]   = cb("GLOBE" in owner)
     ctx["owner_private"] = cb("PRIVATE" in owner)
     ctx["owner_govt"]    = cb("GOVERNMENT" in owner or "GOVT" in owner)
     ctx["owner_tco"]     = cb("TCO" in owner or "TOWER" in owner)
 
     # ─── Room access + cabin location ──────────────────────
-    ctx["room_access"]    = ericsson_fields.get("room_access", "")
-    ctx["cabin_location"] = ericsson_fields.get("cabin_location", "Ground Level")
+    ctx["room_access"]    = pick(site.get("room_access"),    ericsson_fields.get("room_access"))
+    ctx["cabin_location"] = pick(site.get("cabin_location"), ericsson_fields.get("cabin_location"), default="Ground Level")
 
     # ─── Flood history + hauling ───────────────────────────
-    ctx["flood_history"]   = ericsson_fields.get("flood_history", "None")
-    ctx["hauling_remarks"] = ericsson_fields.get("hauling_remarks", "N/A")
+    ctx["flood_history"]   = pick(site.get("flood_history"),   ericsson_fields.get("flood_history"),   default="None")
+    ctx["hauling_remarks"] = pick(site.get("hauling_remarks"), ericsson_fields.get("hauling_remarks"), default="N/A")
 
     # ─── Site profile ──────────────────────────────────────
-    ctx["site_profile"] = ericsson_fields.get("site_profile", "GT Wireless")
+    ctx["site_profile"] = pick(site.get("site_profile"), ericsson_fields.get("site_profile"), default="GT Wireless")
 
-    # ─── Site key location (Excel column M or Q) ───────────
-    ctx["site_key_location"] = (
-        site.get("site_key_location")
-        or ericsson_fields.get("site_key_location", "")
+    # ─── Site key location ─────────────────────────────────
+    ctx["site_key_location"] = pick(
+        site.get("site_key_location"),
+        ericsson_fields.get("site_key_location"),
     )
 
     # ─── Site security checkboxes ──────────────────────────
-    sec = ericsson_fields.get("site_security", "").upper()
-    ctx["security_elock"] = cb("E-LOCK" in sec)
+    sec_raw = site.get("site_security") or ericsson_fields.get("site_security", "")
+    if isinstance(sec_raw, list):
+        sec = " ".join(str(s) for s in sec_raw).upper()
+    else:
+        sec = str(sec_raw).upper()
+
+    ctx["security_elock"] = cb("E-LOCK" in sec or "ELOCK" in sec)
     ctx["sec_caretaker"]  = cb("CARETAKER" in sec)
     ctx["sec_manned"]     = cb("MANNED" in sec)
     ctx["sec_roving"]     = cb("ROVING" in sec)
     ctx["sec_others"]     = cb("OTHERS" in sec)
 
     # ─── Work permit ───────────────────────────────────────
-    permit = ericsson_fields.get("work_permit", "").upper()
+    permit = pick(
+        site.get("work_permit"),
+        ericsson_fields.get("work_permit"),
+    ).upper()
+
     ctx["workpermit_raawa"]  = cb("RAAWA" in permit)
-    ctx["workpermit_others"] = cb(False)
+    ctx["workpermit_others"] = cb("OTHERS" in permit)
 
     # ─── Site access requirement ───────────────────────────
-    ctx["access_requirement"] = ericsson_fields.get("access_requirement", "")
+    ctx["access_requirement"] = pick(
+        site.get("access_requirement"),
+        ericsson_fields.get("access_requirement"),
+    )
 
-    # ─── Vehicle accessibility (usually N/A) ───────────────
-    ctx["no_bridge"]    = ericsson_fields.get("no_bridge", "N/A")
-    ctx["foot_trail"]   = ericsson_fields.get("foot_trail", "N/A")
-    ctx["bridge_ton"]   = ericsson_fields.get("bridge_ton", "N/A")
-    ctx["foot_bridge"]  = ericsson_fields.get("foot_bridge", "N/A")
-    ctx["distance_m"]   = ericsson_fields.get("distance_m", "N/A")
-    ctx["by_boat"]      = ericsson_fields.get("by_boat", "N/A")
+    # ─── Vehicle accessibility ─────────────────────────────
+    ctx["no_bridge"]   = pick(site.get("no_bridge"),   ericsson_fields.get("no_bridge"),   default="N/A")
+    ctx["foot_trail"]  = pick(site.get("foot_trail"),  ericsson_fields.get("foot_trail"),  default="N/A")
+    ctx["bridge_ton"]  = pick(site.get("bridge_ton"),  ericsson_fields.get("bridge_ton"),  default="N/A")
+    ctx["foot_bridge"] = pick(site.get("foot_bridge"), ericsson_fields.get("foot_bridge"), default="N/A")
+    ctx["distance_m"]  = pick(site.get("distance_m"),  ericsson_fields.get("distance_m"),  default="N/A")
+    ctx["by_boat"]     = pick(site.get("by_boat"),     ericsson_fields.get("by_boat"),     default="N/A")
 
     # ─── Site remarks (generated) ──────────────────────────
     ctx["site_remarks"] = build_site_remarks(site, ericsson_fields)
 
-    # ─── Images (paths; wrapped later) ─────────────────────
-    # These are dict entries — core generator wraps as InlineImage.
-    for slot in [
+    # ─── Images (paths; wrapped later by generator) ────────
+    IMAGE_SLOTS = [
         "img_vicinity_map",
         "img_site_photo_1", "img_site_photo_2",
         "img_site_photo_3", "img_site_photo_4",
@@ -233,15 +318,12 @@ def build_context(
         "RS2_load_sched_img", "RS2_load_calc_img",
         "RS1_tapping_img",    "RS2_tapping_img",
         "equipment_room_layout_img", "equipment_cable_routing_img",
-    ]:
+        "transport_existing_1", "transport_existing_2", "transport_existing_3",
+    ]
+    for slot in IMAGE_SLOTS:
         ctx[slot] = images.get(slot, "")
 
-    # ─── Transport (multi-image grid) ──────────────────────
-    ctx["transport_existing_1"] = images.get("transport_existing_1", "")
-    ctx["transport_existing_2"] = images.get("transport_existing_2", "")
-    ctx["transport_existing_3"] = images.get("transport_existing_3", "")
-
-    # ─── Materials (user-filled via Streamlit) ─────────────
+    # ─── Materials ─────────────────────────────────────────
     MATERIAL_KEYS = [
         "grounding", "patchcord", "powercable", "lugs", "tube",
         "tiewrap", "termlog", "conduit", "dcbreaker",
@@ -253,9 +335,9 @@ def build_context(
     return ctx
 
 
-# ─────────────────────────────────────────────────────────────
-# 6. Helpers
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+# 7. Helpers
+# ═════════════════════════════════════════════════════════════
 
 def compose_address_from(site: dict) -> str:
     parts = [site.get("barangay", ""), site.get("municipality", ""),
@@ -269,32 +351,37 @@ def compose_coords_from(site: dict) -> str:
         return ""
     try:
         return f"{float(lat):.5f}, {float(lon):.5f}"
-    except ValueError:
+    except (ValueError, TypeError):
         return f"{lat}, {lon}"
 
 
 def build_site_remarks(site: dict, ericsson: dict) -> str:
     """Compose the multi-line Remarks block."""
-    tco         = site.get("towerco", "")
-    fo_name     = site.get("fo_name", "")
-    fo_mobile   = site.get("fo_mobile", "")
-    flood       = ericsson.get("flood_history", "None")
-    cabin_loc   = ericsson.get("cabin_location", "Ground Level")
-    accessible  = "accessible" in ericsson.get("site_accessible", "accessible").lower()
+    tco       = site.get("towerco", "") or ericsson.get("towerco", "")
+    fo_name   = site.get("fo_name", "")
+    fo_mobile = site.get("fo_mobile", "")
+    flood     = site.get("flood_history") or ericsson.get("flood_history", "None")
+    cabin_loc = site.get("cabin_location") or ericsson.get("cabin_location", "Ground Level")
+    accessible = site.get("site_accessible", ericsson.get("site_accessible", True))
+
+    if isinstance(accessible, bool):
+        accessible_str = "accessible" if accessible else "not accessible"
+    else:
+        accessible_str = "accessible" if "accessible" in str(accessible).lower() else "not accessible"
 
     return (
         f"Pre-requisite / Access: RAAWA, HSWP, and approved {tco} "
         f"ticket are required before entry. "
-        f"(Site is {accessible} to vehicles).\n\n"
+        f"(Site is {accessible_str} to vehicles).\n\n"
         f"Health & Safety / Site Condition: Site is an outdoor Greenfield "
         f"setup with {flood.lower()} flood history. {cabin_loc} cabin location.\n\n"
         f"Contact Person: {fo_name} (Mobile: {fo_mobile})."
     )
 
 
-# ─────────────────────────────────────────────────────────────
-# 7. Generate the final DOCX
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+# 8. Generate the final DOCX
+# ═════════════════════════════════════════════════════════════
 
 def generate_nokia_tssr(
     template_path: str,
@@ -305,59 +392,52 @@ def generate_nokia_tssr(
     """
     Render the Nokia template with the given context.
     Any context value that points to an existing file path
-    will be treated as an InlineImage.
+    will be wrapped as an InlineImage.
     """
     doc = DocxTemplate(template_path)
 
-    # Default image widths per slot (mm)
     DEFAULT_WIDTHS = {
-        "img_vicinity_map": Mm(160),
-        "img_site_photo_1": Mm(80),
-        "img_site_photo_2": Mm(80),
-        "img_site_photo_3": Mm(80),
-        "img_site_photo_4": Mm(80),
-        "img_olt_existing": Mm(80),
-        "img_olt_proposed": Mm(80),
-        "RS1_load_sched_img": Mm(160),
-        "RS1_load_calc_img": Mm(160),
-        "RS2_load_sched_img": Mm(160),
-        "RS2_load_calc_img": Mm(160),
-        "RS1_tapping_img": Mm(80),
-        "RS2_tapping_img": Mm(80),
-        "equipment_room_layout_img": Mm(170),
+        "img_vicinity_map":            Mm(160),
+        "img_site_photo_1":            Mm(80),
+        "img_site_photo_2":            Mm(80),
+        "img_site_photo_3":            Mm(80),
+        "img_site_photo_4":            Mm(80),
+        "img_olt_existing":            Mm(80),
+        "img_olt_proposed":            Mm(80),
+        "RS1_load_sched_img":          Mm(160),
+        "RS1_load_calc_img":           Mm(160),
+        "RS2_load_sched_img":          Mm(160),
+        "RS2_load_calc_img":           Mm(160),
+        "RS1_tapping_img":             Mm(80),
+        "RS2_tapping_img":             Mm(80),
+        "equipment_room_layout_img":   Mm(170),
         "equipment_cable_routing_img": Mm(170),
-        "transport_existing_1": Mm(80),
-        "transport_existing_2": Mm(80),
-        "transport_existing_3": Mm(80),
+        "transport_existing_1":        Mm(80),
+        "transport_existing_2":        Mm(80),
+        "transport_existing_3":        Mm(80),
     }
     widths = {**DEFAULT_WIDTHS, **(image_widths or {})}
 
-    # Convert any file-path values to InlineImage
     rendered = {}
     for key, val in context.items():
-        if isinstance(val, str) and val and Path(val).exists():
-            # Heuristic: if it's an image file and we have a width, wrap it
-            if key in widths:
-                try:
-                    rendered[key] = InlineImage(doc, val, width=widths[key])
-                    continue
-                except Exception:
-                    pass
-            rendered[key] = val
-        else:
-            rendered[key] = val
+        if isinstance(val, str) and val and Path(val).exists() and key in widths:
+            try:
+                rendered[key] = InlineImage(doc, val, width=widths[key])
+                continue
+            except Exception:
+                pass
+        rendered[key] = val
 
     doc.render(rendered)
     doc.save(output_path)
     return output_path
 
 
-# ─────────────────────────────────────────────────────────────
-# 8. Output filename helper
-# ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════
+# 9. Output filename helper
+# ═════════════════════════════════════════════════════════════
 
-def make_output_name(site_id: str, site_name: str,
-                     ext: str = "docx") -> str:
+def make_output_name(site_id: str, site_name: str, ext: str = "docx") -> str:
     site_id = (site_id or "SITE").replace(" ", "")
     site_name = (site_name or "TSSR").replace(" ", "")
     return f"{site_id}_{site_name}_TSSR.{ext}"
