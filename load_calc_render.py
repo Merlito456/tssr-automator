@@ -196,7 +196,13 @@ def render_sheet_png(xlsx_path: str, sheet_name: str, out_png: str) -> str:
 
     html_path = out_png.with_suffix(".html")
     with open(html_path, "w", encoding="utf-8") as f:
-        xlsx2html(xlsx_path, sheet_name=sheet_name, output=f, locale="en_US")
+        # NOTE: xlsx2html uses `sheet=`, NOT `sheet_name=`
+        xlsx2html(
+            xlsx_path,
+            sheet=sheet_name,
+            output=f,
+            locale="en_US",
+        )
 
     # 2) Screenshot with Playwright
     try:
