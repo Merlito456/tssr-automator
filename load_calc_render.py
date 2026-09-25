@@ -8,11 +8,16 @@ Renderer: Playwright + Chromium.
 (wkhtmltopdf is no longer used — it is not available on Debian trixie,
 the current Streamlit Cloud base image.)
 
+Playwright Chromium bootstrap:
+    Streamlit Cloud wipes ~/.cache/ms-playwright on every rebuild,
+    so we re-install Chromium on first use.
+
 Proposed load: always a single Nokia MF-2 OLT (fixed in load_calc_helper).
 """
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -26,6 +31,85 @@ SHEET_BY_INDEX = {
     3: "RS3-computation (existing)",
     4: "RS4-computation (existing)",
 }
+
+
+# ─────────────────────────────────────────────────────────────
+# Playwright browser bootstrap
+# ─────────────────────────────────────────────────────────────
+
+_PLAYWRIGHT_READY = False
+
+
+def _ensure_playwright_browser():
+    """
+    Ensure the Playwright Chromium binary is present.
+
+    Streamlit Cloud wipes ~/.cache/ms-playwright on every rebuild,
+    so we call `playwright install chromium` once per Python process.
+    Subsequent calls are no-ops (guarded by _PLAYWRIGHT_READY).
+    """
+    global _PLAYWRIGHT_READY
+    if _PLAYWRIGHT_READY:
+        return
+
+    cache_root = Path.home() / ".cache" / "ms-playwright"
+    already_installed = False
+
+    if cache_root.exists():
+        for d in cache_root.iterdir():
+            if not d.is_dir():
+                continue
+            if "chromium" not in d.name.lower():
+                continue
+            # Look for either the headless shell or the full Chrome binary
+            candidates = (
+                list(d.rglob("chrome-headless-shell")) +
+                list(d.rglob("chrome")) +
+                list(d.rglob("headless_shell"))
+            )
+            if candidates:
+                already_installed = True
+                break
+
+    if not already_installed:
+        # Prefer the system-installed `playwright` CLI, fall back to
+        # `python -m playwright`. `--with-deps` pulls the apt deps
+        # needed for headless Chromium.
+        cmd_candidates = [
+            ["playwright", "install", "--with-deps", "chromium"],
+            ["python", "-m", "playwright", "install", "--with-deps", "chromium"],
+        ]
+        installed_ok = False
+        for cmd in cmd_candidates:
+            try:
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    timeout=600,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                installed_ok = True
+                break
+            except FileNotFoundError:
+                continue
+            except subprocess.CalledProcessError as e:
+                print(f"[playwright bootstrap] {cmd[0]} failed: {e}")
+                continue
+
+        if not installed_ok:
+            # Last resort: try without --with-deps (if system libs
+            # are already present via packages.txt)
+            try:
+                subprocess.run(
+                    ["python", "-m", "playwright", "install", "chromium"],
+                    check=True, timeout=600,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+            except Exception as e:
+                print(f"[playwright bootstrap] final fallback failed: {e}")
+
+    _PLAYWRIGHT_READY = True
 
 
 # ─────────────────────────────────────────────────────────────
@@ -185,6 +269,9 @@ def render_sheet_png(xlsx_path: str, sheet_name: str, out_png: str) -> str:
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
 
+    # 0) Ensure Chromium is installed (no-op after first call)
+    _ensure_playwright_browser()
+
     # 1) Build the HTML from the sheet
     try:
         from xlsx2html import xlsx2html
@@ -210,14 +297,21 @@ def render_sheet_png(xlsx_path: str, sheet_name: str, out_png: str) -> str:
     except ImportError as e:
         raise RuntimeError(
             "Playwright not installed. Add 'playwright' to requirements.txt "
-            "and create setup.sh with 'python -m playwright install chromium'."
+            "and reboot the app."
         ) from e
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--no-sandbox"])
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
+        )
         page = browser.new_page(viewport={"width": 1400, "height": 1300})
         page.goto(f"file://{html_path.resolve()}")
-        page.wait_for_timeout(600)
+        page.wait_for_timeout(800)
         page.screenshot(
             path=str(out_png),
             full_page=False,
