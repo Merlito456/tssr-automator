@@ -85,59 +85,6 @@ FIELD-BY-FIELD GUIDE (extract in this exact order)
   EXAMPLE: E-LOCK checked -> ["E-LOCK"]
   If none checked, use [].
 
-"access_requirement"
-  WHERE: "Site Access Requirement" narrative field, OR "Work Permit" checkboxes
-  FREE TEXT — copy verbatim from the TSSR. Max 200 chars.
-  RULE: Extract the FULL text verbatim. Include all permit types mentioned.
-  EXAMPLES:
-    "Office Hours" -> "Office Hours"
-    "Raawa, LILO, Approved Ticket" -> "Raawa, LILO, Approved Ticket"
-    "RAAWA, HSWP and iTower Account (for Philtower), iAMS account(for FTAP), Approved TAP (Edotco)"
-      -> "RAAWA, HSWP and iTower Account (for Philtower), iAMS account(for FTAP), Approved TAP (Edotco)"
-  If not found, use "".
-
-"work_permit"
-  DEPENDS ON "access_requirement" AND the site's TOWERCO.
-  Extract this AFTER access_requirement is known.
-
-  RULES:
-    1. If access_requirement contains "RAAWA" (case-insensitive):
-         a. Look up the site's TOWERCO (from masterlist, e.g. PHILTOWER,
-            FTAP, EDOTCO, etc.)
-         b. Compose: "RAAWA" + the towerco-specific requirement
-         c. Return the composed string
-       Towerco mapping (use the site's actual TOWERCO from the TSSR):
-         - PHILTOWER  -> "RAAWA, HSWP and iTower Account"
-         - FTAP       -> "RAAWA, iAMS account"
-         - EDOTCO     -> "RAAWA, Approved TAP"
-         - (unknown)  -> "RAAWA"
-    2. Else if access_requirement contains "Others" with a specific value
-       -> return "Others, <the specific value>"
-    3. Else (e.g., "Office Hours", generic text without RAAWA) -> return ""
-
-  EXAMPLES:
-    access_requirement = "Raawa, LILO, Approved Ticket"
-      TOWERCO = PHILTOWER
-      -> "RAAWA, HSWP and iTower Account"
-
-    access_requirement = "RAAWA, LILO, Approved Ticket"
-      TOWERCO = FTAP
-      -> "RAAWA, iAMS account"
-
-    access_requirement = "RAAWA"
-      TOWERCO = EDOTCO
-      -> "RAAWA, Approved TAP"
-
-    access_requirement = "RAAWA"
-      TOWERCO = (unknown)
-      -> "RAAWA"
-
-    access_requirement = "Office Hours"
-      -> ""
-
-    access_requirement = "" 
-      -> ""
-
 "site_type"
   WHERE: "Site Type" or narrative description of the structure
   CHOICES (pick exactly ONE): "Greenfield/Outdoor", "Street Cabinet", "Indoor", "Others"
