@@ -20,150 +20,116 @@ I will provide you with the Ericsson TSSR PDF. Extract the following fields and 
 CRITICAL RULES
 ═══════════════════════════════════════════════════════════════
 1. Return ONLY the JSON object. No explanations, no markdown fences, no preamble, no trailing text.
-2. Use "" (empty string) if a field is genuinely not found — do NOT invent values.
-3. Use ONLY the exact values listed in the CHOICES below. Case-sensitive.
-4. If the TSSR uses a synonym, map it to the closest CHOICE.
-5. For fields with empty list [] — only include values you actually found.
-6. Booleans must be true or false (lowercase, JSON style).
+2. Use the exact values from the CHOICES / DEFAULT lines. Case-sensitive.
+3. If the TSSR uses a synonym, map it to the closest CHOICE.
+4. For list fields, only include values you actually found.
+5. Booleans must be true or false (lowercase, JSON style).
+6. When a field has a DEFAULT, use it if the TSSR doesn't explicitly state that field.
 
 ═══════════════════════════════════════════════════════════════
-FIELD-BY-FIELD GUIDE (where to look, what to accept)
+FIELD-BY-FIELD GUIDE
 ═══════════════════════════════════════════════════════════════
+
 "site_class"
-  WHERE: "Site Class", "Tower Class", or "Structure Classification" in the site details section
+  WHERE: "Site Class", "Tower Class", or "Structure Classification"
   CHOICES: "C1", "C2", "C3", "C4", "C5", "Custom"
-  DEFAULT: "C3"  <-- If not explicitly found in the TSSR, use "C3".
-  Most Philippine sites are C3, so this is the safe default.
-  EXAMPLE: If TSSR says "Site Class: C3" -> "C3"
-  If TSSR says "Tower Class: C2" -> "C2"
-  If not found anywhere -> "C3"
-
-...
-
-"flood_history"
-  WHERE: "Flood History", "Flood Prone", or site condition narrative
-  CHOICES: "None", "Low", "Moderate", "High", "Unknown", "N/A"
-  DEFAULT: "N/A"  <-- If not explicitly stated, use "N/A".
-  EXAMPLE: "None" -> "None"
-  If no flood info is present -> "N/A"
-
-...
-
-"site_key_location"
-  DO NOT EXTRACT. This comes from the masterlist. Return "".
-
-...
-
-"work_permit"
-  WHERE: "Work Permit" checkboxes OR "Site Access Requirement" narrative
-  CHOICES (pick exactly ONE): "RAAWA", "Others", ""
-  RULE: Only return "RAAWA" if the TSSR explicitly mentions "RAAWA".
-        Only return "Others" if it says "Others" with a specific value.
-        Otherwise -> "".
-
-"site_class"
-  WHERE: "Site Class", "Tower Class", or "Structure Classification" in the site details section
-  CHOICES: "C1", "C2", "C3", "C4", "C5", "Custom", ""
-  EXAMPLE: If TSSR says "Site Class: C3" -> "C3"
-  If not found, use "".
+  DEFAULT: "C3"  <-- Most Philippine sites are C3. Use "C3" if not found.
+  EXAMPLE: "Site Class: C2" -> "C2"
 
 "room_access"
-  WHERE: "Room Access", "Access to Site", "Site Access" narrative
-  CHOICES: "Outdoor site", "Indoor site", "No room access", "Street cabinet", "Shelter", ""
+  WHERE: "Room Access", "Access to Site", or "Site Access" narrative
+  CHOICES: "Outdoor site", "Indoor site", "No room access", "Street cabinet", "Shelter"
   EXAMPLE: "N/A - Outdoor site / No room access" -> "Outdoor site"
   If not found, use "".
 
 "cabin_location"
   WHERE: "Cabin Location", "Equipment Location", or equipment placement narrative
-  CHOICES: "Ground Level", "Rooftop", "On Tower", "Pole-mounted", "Shelter", "Indoor Room", ""
-  EXAMPLE: "Ground level cabin location" -> "Ground Level"
+  CHOICES: "Ground Level", "Rooftop", "On Tower", "Pole-mounted", "Shelter", "Indoor Room"
+  EXAMPLE: "Ground level cabin" -> "Ground Level"
   If not found, use "".
 
 "flood_history"
   WHERE: "Flood History", "Flood Prone", or site condition narrative
-  CHOICES: "None", "Low", "Moderate", "High", "Unknown", ""
-  EXAMPLE: "None" -> "None"
-  If not found, use "".
+  CHOICES: "None", "Low", "Moderate", "High", "Unknown", "N/A"
+  DEFAULT: "N/A"  <-- Use "N/A" if the TSSR doesn't mention flooding.
+  EXAMPLE: "Flood History: None" -> "None"
 
 "hauling_remarks"
   WHERE: "Hauling Remarks", "Hauling Notes", "Access Notes"
-  FREE TEXT — copy verbatim. Max 120 characters.
-  If not found, use "".
+  FREE TEXT — copy verbatim. Max 120 chars.
+  If not found, use "N/A".
 
 "site_profile"
   WHERE: "Site Profile", "Towerco Profile", "Site Category"
-  CHOICES: "GT Wireless", "Rural", "Urban", "Suburban", "Highway", "Coastal", ""
-  NOTE: This is NOT the same as Site Type. Do NOT use "City" or "Greenfield" here.
-  EXAMPLE: "GT Wireless" -> "GT Wireless"
+  CHOICES: "GT Wireless", "Rural", "Urban", "Suburban", "Highway", "Coastal"
+  NOTE: Do NOT use "City" or "Greenfield" here — those belong to site_type.
+  EXAMPLE: "Site Profile: GT Wireless" -> "GT Wireless"
   If not found, use "".
 
 "site_key_location"
-  WHERE: "Site Key Location", "Key Location", "Access Keys"
-  FREE TEXT — copy verbatim. Max 120 characters.
-  EXAMPLE: "E-LOCK/RECT. KEY & CABINET KEY AT GT HUB"
+  DO NOT EXTRACT. This field comes from the masterlist (Column M).
+  Always return "" for this field.
 
 "site_owner"
-  WHERE: "Site Owner" checkboxes on the site details page
+  WHERE: "Site Owner" checkboxes
   CHOICES (pick exactly ONE): "Globe", "Private", "Government", "TCO"
   EXAMPLE: If "TCO" is checked -> "TCO"
-  If multiple are checked, pick the one marked with X or checkmark.
+  If multiple are checked, pick the one with an X or checkmark.
+  If not found, use "".
 
 "site_security"
   WHERE: "Security" checkboxes
-  CHOICES (multi-select, list only the CHECKED ones):
+  CHOICES (multi-select list, only the CHECKED ones):
     "E-LOCK", "Caretaker", "Manned", "Roving Security", "Others"
-  EXAMPLE: If E-LOCK is checked -> ["E-LOCK"]
-  If no security is checked -> []
+  EXAMPLE: E-LOCK checked -> ["E-LOCK"]
+  If none checked, use [].
 
 "work_permit"
   WHERE: "Work Permit" checkboxes OR "Site Access Requirement" narrative
-  CHOICES (pick exactly ONE): "RAAWA", "Others"
-  EXAMPLE: If narrative mentions "RAAWA permit required" -> "RAAWA"
-  If not found, use "".
+  CHOICES (pick exactly ONE): "RAAWA", "Others", ""
+  RULE: Only return "RAAWA" if the TSSR EXPLICITLY mentions "RAAWA".
+        Only return "Others" if it says "Others" with a specific value.
+        Otherwise -> "".
+  EXAMPLE: "RAAWA permit required" -> "RAAWA"
+  EXAMPLE: "Office Hours" -> "" (not a RAAWA site)
 
 "access_requirement"
   WHERE: "Site Access Requirement" narrative field
-  FREE TEXT — copy verbatim. Max 200 characters.
+  FREE TEXT — copy verbatim. Max 200 chars.
   EXAMPLE: "RAAWA, HSWP AND APPROVED PHILTOWER TICKET" or "Office Hours"
   If not found, use "".
 
 "site_type"
-  WHERE: "Site Type" or narrative description of the site structure
+  WHERE: "Site Type" or narrative description of the structure
   CHOICES (pick exactly ONE): "Greenfield/Outdoor", "Street Cabinet", "Indoor", "Others"
-  EXAMPLE: "Outdoor site" or "Greenfield" -> "Greenfield/Outdoor"
+  EXAMPLE: "Outdoor site" -> "Greenfield/Outdoor"
   If not found, use "".
 
 "site_accessible"
-  WHERE: "Accessible to Vehicle" or "Not accessible to Vehicle" or access narrative
-  BOOLEAN: true if vehicle can reach the site, false if foot trail/boat only
+  WHERE: "Accessible to Vehicle" OR "Not accessible to Vehicle" OR access narrative
+  BOOLEAN: true if vehicle can reach the site, false if foot trail/boat only.
   EXAMPLE: "Site is accessible to vehicles" -> true
 
 "no_bridge"
-  WHERE: "No. of Bridge" field
-  FREE TEXT. If empty or N/A, use "N/A".
+  WHERE: "No. of Bridge" field. If empty or N/A, use "N/A".
 
 "foot_trail"
-  WHERE: "Foot Trail" field
-  FREE TEXT. If empty or N/A, use "N/A".
+  WHERE: "Foot Trail" field. If empty or N/A, use "N/A".
 
 "bridge_ton"
-  WHERE: "Bridge (ton)" field
-  FREE TEXT. If empty or N/A, use "N/A".
+  WHERE: "Bridge (ton)" field. If empty or N/A, use "N/A".
 
 "foot_bridge"
-  WHERE: "Foot Bridge" field
-  FREE TEXT. If empty or N/A, use "N/A".
+  WHERE: "Foot Bridge" field. If empty or N/A, use "N/A".
 
 "distance_m"
-  WHERE: "Distance (m)" field
-  FREE TEXT. If empty or N/A, use "N/A".
+  WHERE: "Distance (m)" field. If empty or N/A, use "N/A".
 
 "by_boat"
-  WHERE: "By Boat" field
-  FREE TEXT. If empty or N/A, use "N/A".
+  WHERE: "By Boat" field. If empty or N/A, use "N/A".
 
 ═══════════════════════════════════════════════════════════════
-REQUIRED JSON SCHEMA (return exactly this structure)
+REQUIRED JSON SCHEMA — return EXACTLY this structure
 ═══════════════════════════════════════════════════════════════
 {
   "site_class": "",
@@ -188,20 +154,20 @@ REQUIRED JSON SCHEMA (return exactly this structure)
 }
 
 ═══════════════════════════════════════════════════════════════
-EXAMPLE OUTPUT (for a typical site)
+EXAMPLE OUTPUT for a typical site
 ═══════════════════════════════════════════════════════════════
 {
   "site_class": "C3",
   "room_access": "Outdoor site",
   "cabin_location": "Ground Level",
-  "flood_history": "None",
+  "flood_history": "N/A",
   "hauling_remarks": "N/A - No hauling required",
   "site_profile": "GT Wireless",
-  "site_key_location": "E-LOCK/RECT. KEY & CABINET KEY AT GT HUB",
+  "site_key_location": "",
   "site_owner": "TCO",
-  "site_security": ["E-LOCK", "Caretaker"],
-  "work_permit": "RAAWA",
-  "access_requirement": "RAAWA, HSWP AND APPROVED PHILTOWER TICKET",
+  "site_security": ["E-LOCK"],
+  "work_permit": "",
+  "access_requirement": "Office Hours",
   "site_type": "Greenfield/Outdoor",
   "site_accessible": true,
   "no_bridge": "N/A",
@@ -219,7 +185,7 @@ NOW EXTRACT FROM THIS TSSR:
 
 
 # ═════════════════════════════════════════════════════════════
-# Expected fields + allowed choices
+# Expected fields + type info
 # ═════════════════════════════════════════════════════════════
 
 EXPECTED_FIELDS = {
@@ -245,13 +211,18 @@ EXPECTED_FIELDS = {
 }
 
 
+# ═════════════════════════════════════════════════════════════
+# Allowed choices per field (for validation)
+# ═════════════════════════════════════════════════════════════
+
 FIELD_CHOICES = {
     "site_class":     {"C1", "C2", "C3", "C4", "C5", "Custom", ""},
     "room_access":    {"Outdoor site", "Indoor site", "No room access",
                        "Street cabinet", "Shelter", ""},
     "cabin_location": {"Ground Level", "Rooftop", "On Tower",
                        "Pole-mounted", "Shelter", "Indoor Room", ""},
-    "flood_history":  {"None", "Low", "Moderate", "High", "Unknown", ""},
+    "flood_history":  {"None", "Low", "Moderate", "High",
+                       "Unknown", "N/A", ""},
     "site_profile":   {"GT Wireless", "Rural", "Urban", "Suburban",
                        "Highway", "Coastal", ""},
     "site_owner":     {"Globe", "Private", "Government", "TCO", ""},
@@ -351,7 +322,7 @@ def validate_and_normalize(data: dict) -> tuple[dict, list[str]]:
             else:
                 clean[key] = bool(val)
 
-        # ─── Enforce choices for single-value string fields ───
+        # ─── Enforce choices for string fields ───
         if key in FIELD_CHOICES and expected == "str":
             allowed = FIELD_CHOICES[key]
             if clean[key] not in allowed:
