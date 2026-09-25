@@ -1,0 +1,9 @@
+# Session persistence (local only)
+.session/
+
+# Streamlit
+__pycache__/
+*.pyc
+
+# Workdirs (if they end up in the repo)
+workdir/
