@@ -6,6 +6,9 @@ Excel masterlist → site identity (authoritative)
 AI extraction    → supplementary fields (fills gaps)
 Ericsson TSSR    → images + fallback fields
 User uploads     → optional image overrides
+
+Work permit + Access requirement are HARDCODED from towercо rules
+(see towercо_rules.py) — not from AI.
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ from docx.shared import Mm
 from docxtpl import DocxTemplate, InlineImage
 from pdf2docx import Converter
 from PIL import Image
+
+from towercо_rules import get_permits_for_towerco
 
 
 # ═════════════════════════════════════════════════════════════
@@ -139,23 +144,27 @@ def merge_ai_fields(site: dict, ai_fields: dict) -> dict:
     Merge AI-extracted fields into the site dict.
     Priority: Excel > AI > existing site dict > empty.
 
-    Only fills a field if it's missing or empty in the current site dict.
+    Fields derived by the app (work_permit, access_requirement,
+    site_key_location) are SKIPPED — they're computed elsewhere.
     """
+    SKIP_FIELDS = {"work_permit", "access_requirement", "site_key_location"}
+
     merged = dict(site)
 
     for key, val in ai_fields.items():
-        # Skip if the site dict already has a non-empty value
+        if key in SKIP_FIELDS:
+            continue
+
         existing = merged.get(key)
         if existing not in ("", None, [], {}):
             continue
 
-        # Normalize the AI value
         if isinstance(val, str):
             clean_val = val.strip()
             if clean_val:
                 merged[key] = clean_val
         elif isinstance(val, list):
-            if val:  # non-empty list
+            if val:
                 merged[key] = val
         elif isinstance(val, bool):
             merged[key] = val
@@ -224,7 +233,6 @@ def build_context(
         ericsson_fields.get("room_access"),
     ).lower()
 
-    # Fallback inference from room_access
     if not site_type:
         if "outdoor" in room_access or not room_access:
             site_type = "greenfield"
@@ -282,20 +290,17 @@ def build_context(
     ctx["sec_roving"]     = cb("ROVING" in sec)
     ctx["sec_others"]     = cb("OTHERS" in sec)
 
-    # ─── Work permit ───────────────────────────────────────
-    permit = pick(
-        site.get("work_permit"),
-        ericsson_fields.get("work_permit"),
-    ).upper()
+    # ─── Work permit + Access requirement (HARDCODED FROM TOWERCO) ───
+    towercо = pick(site.get("towerco"), ericsson_fields.get("towerco"))
+    permits = get_permits_for_towerco(towercо)
 
-    ctx["workpermit_raawa"]  = cb("RAAWA" in permit)
-    ctx["workpermit_others"] = cb("OTHERS" in permit)
+    ctx["work_permit"]        = permits["work_permit"]
+    ctx["access_requirement"] = permits["access_requirement"]
 
-    # ─── Site access requirement ───────────────────────────
-    ctx["access_requirement"] = pick(
-        site.get("access_requirement"),
-        ericsson_fields.get("access_requirement"),
-    )
+    # Legacy checkbox tags (still populated in case template uses them)
+    permit_upper = ctx["work_permit"].upper()
+    ctx["workpermit_raawa"]  = cb("RAAWA" in permit_upper)
+    ctx["workpermit_others"] = cb("OTHERS" in permit_upper)
 
     # ─── Vehicle accessibility ─────────────────────────────
     ctx["no_bridge"]   = pick(site.get("no_bridge"),   ericsson_fields.get("no_bridge"),   default="N/A")
