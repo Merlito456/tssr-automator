@@ -25,9 +25,10 @@ CRITICAL RULES
 4. For list fields, only include values you actually found.
 5. Booleans must be true or false (lowercase, JSON style).
 6. When a field has a DEFAULT, use it if the TSSR doesn't explicitly state that field.
+7. Extract fields IN THE ORDER LISTED. Some fields depend on earlier ones.
 
 ═══════════════════════════════════════════════════════════════
-FIELD-BY-FIELD GUIDE
+FIELD-BY-FIELD GUIDE (extract in this exact order)
 ═══════════════════════════════════════════════════════════════
 
 "site_class"
@@ -84,20 +85,33 @@ FIELD-BY-FIELD GUIDE
   EXAMPLE: E-LOCK checked -> ["E-LOCK"]
   If none checked, use [].
 
-"work_permit"
-  WHERE: "Work Permit" checkboxes OR "Site Access Requirement" narrative
-  CHOICES (pick exactly ONE): "RAAWA", "Others", ""
-  RULE: Only return "RAAWA" if the TSSR EXPLICITLY mentions "RAAWA".
-        Only return "Others" if it says "Others" with a specific value.
-        Otherwise -> "".
-  EXAMPLE: "RAAWA permit required" -> "RAAWA"
-  EXAMPLE: "Office Hours" -> "" (not a RAAWA site)
-
 "access_requirement"
-  WHERE: "Site Access Requirement" narrative field
-  FREE TEXT — copy verbatim. Max 200 chars.
-  EXAMPLE: "RAAWA, HSWP AND APPROVED PHILTOWER TICKET" or "Office Hours"
+  WHERE: "Site Access Requirement" narrative field, OR "Work Permit" checkboxes
+  FREE TEXT — copy verbatim from the TSSR. Max 200 chars.
+  RULE: Extract the FULL text verbatim. Include all permit types mentioned.
+  EXAMPLES:
+    "Office Hours" -> "Office Hours"
+    "Raawa, LILO, Approved Ticket" -> "Raawa, LILO, Approved Ticket"
+    "RAAWA, HSWP and iTower Account (for Philtower), iAMS account(for FTAP), Approved TAP (Edotco)"
+      -> "RAAWA, HSWP and iTower Account (for Philtower), iAMS account(for FTAP), Approved TAP (Edotco)"
   If not found, use "".
+
+"work_permit"
+  DEPENDS ON "access_requirement" — extract this AFTER access_requirement.
+  WHERE: Derive from the "access_requirement" value above.
+  CHOICES (pick exactly ONE): "RAAWA", "Others", ""
+  RULES:
+    1. If access_requirement contains "RAAWA" (any case) -> return "RAAWA"
+    2. Else if access_requirement contains "Others" with a specific value
+       -> return "Others"
+    3. Else (e.g., "Office Hours", "LILO", or any generic text without
+       a permit type) -> return ""
+  EXAMPLES:
+    access_requirement = "RAAWA, LILO, Approved Ticket" -> "RAAWA"
+    access_requirement = "RAAWA, HSWP and iTower Account" -> "RAAWA"
+    access_requirement = "Office Hours" -> ""
+    access_requirement = "LILO, Approved Ticket" -> "" (no RAAWA)
+    access_requirement = "" -> ""
 
 "site_type"
   WHERE: "Site Type" or narrative description of the structure
@@ -130,6 +144,7 @@ FIELD-BY-FIELD GUIDE
 
 ═══════════════════════════════════════════════════════════════
 REQUIRED JSON SCHEMA — return EXACTLY this structure
+(Note: access_requirement comes BEFORE work_permit)
 ═══════════════════════════════════════════════════════════════
 {
   "site_class": "",
@@ -141,8 +156,8 @@ REQUIRED JSON SCHEMA — return EXACTLY this structure
   "site_key_location": "",
   "site_owner": "",
   "site_security": [],
-  "work_permit": "",
   "access_requirement": "",
+  "work_permit": "",
   "site_type": "",
   "site_accessible": true,
   "no_bridge": "",
@@ -155,6 +170,7 @@ REQUIRED JSON SCHEMA — return EXACTLY this structure
 
 ═══════════════════════════════════════════════════════════════
 EXAMPLE OUTPUT for a typical site
+(access_requirement is "Office Hours" so work_permit is "")
 ═══════════════════════════════════════════════════════════════
 {
   "site_class": "C3",
@@ -166,8 +182,34 @@ EXAMPLE OUTPUT for a typical site
   "site_key_location": "",
   "site_owner": "TCO",
   "site_security": ["E-LOCK"],
-  "work_permit": "",
   "access_requirement": "Office Hours",
+  "work_permit": "",
+  "site_type": "Greenfield/Outdoor",
+  "site_accessible": true,
+  "no_bridge": "N/A",
+  "foot_trail": "N/A",
+  "bridge_ton": "N/A",
+  "foot_bridge": "N/A",
+  "distance_m": "N/A",
+  "by_boat": "N/A"
+}
+
+═══════════════════════════════════════════════════════════════
+SECOND EXAMPLE (access_requirement contains RAAWA,
+so work_permit is "RAAWA")
+═══════════════════════════════════════════════════════════════
+{
+  "site_class": "C3",
+  "room_access": "Outdoor site",
+  "cabin_location": "Ground Level",
+  "flood_history": "N/A",
+  "hauling_remarks": "N/A",
+  "site_profile": "GT Wireless",
+  "site_key_location": "",
+  "site_owner": "TCO",
+  "site_security": ["E-LOCK"],
+  "access_requirement": "RAAWA, LILO, Approved Ticket",
+  "work_permit": "RAAWA",
   "site_type": "Greenfield/Outdoor",
   "site_accessible": true,
   "no_bridge": "N/A",
@@ -198,8 +240,8 @@ EXPECTED_FIELDS = {
     "site_key_location":  "str",
     "site_owner":         "str",
     "site_security":      "list",
-    "work_permit":        "str",
     "access_requirement": "str",
+    "work_permit":        "str",
     "site_type":          "str",
     "site_accessible":    "bool",
     "no_bridge":          "str",
@@ -280,6 +322,35 @@ def _match_choice(value: str, choices: set) -> str:
     return ""
 
 
+def _enforce_work_permit_logic(clean: dict, warnings: list[str]) -> None:
+    """
+    Post-process: derive work_permit from access_requirement.
+
+    If the AI didn't already set work_permit correctly, apply the rule:
+      - access_requirement contains "RAAWA" -> work_permit = "RAAWA"
+      - access_requirement contains "Others" -> work_permit = "Others"
+      - otherwise -> work_permit = ""
+    """
+    access = str(clean.get("access_requirement", "")).upper()
+    current_permit = clean.get("work_permit", "")
+
+    # Determine correct value from access_requirement
+    if "RAAWA" in access:
+        expected_permit = "RAAWA"
+    elif "OTHERS" in access:
+        expected_permit = "Others"
+    else:
+        expected_permit = ""
+
+    if current_permit != expected_permit:
+        if current_permit:
+            warnings.append(
+                f"`work_permit`: overridden '{current_permit}' -> "
+                f"'{expected_permit}' based on access_requirement"
+            )
+        clean["work_permit"] = expected_permit
+
+
 def validate_and_normalize(data: dict) -> tuple[dict, list[str]]:
     """
     Validate AI JSON, coerce types, enforce choices.
@@ -349,5 +420,8 @@ def validate_and_normalize(data: dict) -> tuple[dict, list[str]]:
                 warnings.append(
                     f"`{key}`: removed invalid values {sorted(removed)}"
                 )
+
+    # ─── Post-processing: derive work_permit from access_requirement ───
+    _enforce_work_permit_logic(clean, warnings)
 
     return clean, warnings
