@@ -1,369 +1,3 @@
-# app.py
-"""
-TSSR Automator v0.9
-- Excel masterlist (auto-loaded)
-- AI-assisted field extraction via Gemini/ChatGPT
-- AI-assisted load calculation (C7 block, RS1–RS4)
-- Ericsson TSSR PDF (image extraction)
-- Hardcoded work_permit + access_requirement from towerco rules
-- Map + Street View capture (no API key)
-- Persistent state across refresh
-- Image grid with blue/black status indicators
-- Real Ctrl+V paste via custom component
-"""
-import shutil
-import tempfile
-import time
-import traceback
-import urllib.request
-from pathlib import Path
-
-import streamlit as st
-import streamlit.components.v1 as components
-
-import core
-import ai_helper
-import state_manager as sm
-from excel_loader import SiteMasterlist
-from components.paste_image import paste_image, save_pasted_image
-from permit_rules import get_permits_for_towerco
-
-
-APP_DIR = Path(__file__).resolve().parent
-MASTERLIST_PATH = APP_DIR / "data" / "MINDANAO_Site_Activity_Monitoring_OLT_PROJECT.xlsx"
-TEMPLATE_PATH   = APP_DIR / "templates" / "nokia_template.docx"
-
-
-st.set_page_config(
-    page_title="TSSR Automator",
-    page_icon="📡",
-    layout="wide",
-)
-
-
-DEFAULTS = {
-    "workdir": None,
-    "masterlist": None,
-    "ericsson_docx": None,
-    "ericsson_images": [],
-    "ericsson_fields": {},
-    "site_data": {},
-    "image_map": {},
-    "materials": {},
-    "selected_plaid": "",
-    "ai_applied": False,
-    # --- AI Load Calculator ---
-    "load_calc_data": None,
-    "load_calc_rs": "RS1 — Rectifier 1",
-}
-
-for k, v in DEFAULTS.items():
-    st.session_state.setdefault(k, v)
-
-if "_restored" not in st.session_state:
-    saved = sm.load_state()
-    for k, v in saved.items():
-        if k in DEFAULTS:
-            st.session_state[k] = v
-    saved_workdir = sm.load_workdir()
-    if saved_workdir and Path(saved_workdir).exists():
-        st.session_state.workdir = saved_workdir
-    st.session_state["_restored"] = True
-
-
-# ═════════════════════════════════════════════════════════════
-# Helpers
-# ═════════════════════════════════════════════════════════════
-
-def persist():
-    sm.save_state(dict(st.session_state))
-    if st.session_state.workdir:
-        sm.save_workdir(st.session_state.workdir)
-
-
-def reset_to_new_site():
-    if st.session_state.workdir and Path(st.session_state.workdir).exists():
-        shutil.rmtree(st.session_state.workdir, ignore_errors=True)
-    sm.clear_state()
-    for k, v in DEFAULTS.items():
-        if k == "masterlist":
-            continue
-        if isinstance(v, (list, dict)):
-            st.session_state[k] = type(v)()
-        elif isinstance(v, bool):
-            st.session_state[k] = False
-        else:
-            st.session_state[k] = v
-    st.session_state["_restored"] = True
-
-
-def ensure_workdir() -> Path:
-    workdir = Path(st.session_state.workdir or tempfile.mkdtemp(prefix="tssr_"))
-    st.session_state.workdir = str(workdir)
-    sm.save_workdir(str(workdir))
-    return workdir
-
-
-def save_upload(uploaded_file) -> str:
-    workdir = ensure_workdir()
-    uploads = workdir / "uploads"
-    uploads.mkdir(parents=True, exist_ok=True)
-    dest = uploads / uploaded_file.name
-    dest.write_bytes(uploaded_file.getbuffer())
-    return str(dest)
-
-
-# ═════════════════════════════════════════════════════════════
-# Map helpers — no API key needed
-# ═════════════════════════════════════════════════════════════
-
-def _osm_embed_html(lat: str, lon: str, height: int = 450,
-                    zoom: int = 17) -> str:
-    """
-    OpenStreetMap embed via iframe. Free, no API key.
-    Uses a bbox around the point for the visible extent.
-    """
-    lat_f = float(lat)
-    lon_f = float(lon)
-    delta = 0.003
-    bbox = f"{lon_f - delta},{lat_f - delta},{lon_f + delta},{lat_f + delta}"
-    return f"""
-    <iframe
-        width="100%"
-        height="{height}"
-        frameborder="0"
-        scrolling="no"
-        marginheight="0"
-        marginwidth="0"
-        src="https://www.openstreetmap.org/export/embed.html?bbox={bbox}&layer=mapnik&marker={lat_f},{lon_f}"
-        style="border: 1px solid #ccc; border-radius: 8px;">
-    </iframe>
-    """
-
-
-def _download_static_map(lat: str, lon: str, dest_path: str,
-                         zoom: int = 17, size: str = "800x600") -> str | None:
-    """Download a static map PNG from OSM-based staticmap service."""
-    try:
-        url = (
-            f"https://staticmap.openstreetmap.de/staticmap.php"
-            f"?center={lat},{lon}"
-            f"&zoom={zoom}"
-            f"&size={size}"
-            f"&maptype=mapnik"
-            f"&markers={lat},{lon},red-pushpin"
-        )
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "TSSR-Automator/1.0"}
-        )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = resp.read()
-
-        if len(data) < 2000:
-            print(f"Static map response too small: {len(data)} bytes")
-            return None
-
-        dest = Path(dest_path)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
-        return str(dest)
-    except Exception as e:
-        print(f"Static map download failed: {e}")
-        return None
-
-
-# ═════════════════════════════════════════════════════════════
-# Image slot definitions
-# ═════════════════════════════════════════════════════════════
-
-IMAGE_SLOTS = [
-    ("img_vicinity_map",           "Vicinity Map"),
-    ("img_site_photo_1",           "Site Photo 1"),
-    ("img_site_photo_2",           "Site Photo 2"),
-    ("img_site_photo_3",           "Site Photo 3"),
-    ("img_site_photo_4",           "Site Photo 4"),
-    ("img_olt_existing",           "OLT — Existing"),
-    ("img_olt_proposed",           "OLT — Proposed"),
-    ("RS1_load_sched_img",         "RS1 — Load Schedule"),
-    ("RS1_load_calc_img",          "RS1 — Load Calc"),
-    ("RS2_load_sched_img",         "RS2 — Load Schedule"),
-    ("RS2_load_calc_img",          "RS2 — Load Calc"),
-    ("RS1_tapping_img",            "RS1 — Tapping"),
-    ("RS2_tapping_img",            "RS2 — Tapping"),
-    ("equipment_room_layout_img",  "Equipment — Room Layout"),
-    ("equipment_cable_routing_img","Equipment — Cable Routing"),
-    ("transport_existing_1",       "Transport — Existing 1"),
-    ("transport_existing_2",       "Transport — Existing 2"),
-    ("transport_existing_3",       "Transport — Existing 3"),
-]
-
-
-# ═════════════════════════════════════════════════════════════
-# Image editor dialog
-# ═════════════════════════════════════════════════════════════
-
-@st.dialog("Image slot", width="large")
-def image_dialog(slot: str, label: str, extracted: list[str]):
-    st.markdown(f"### {label}")
-    st.caption(f"Slot key: `{slot}`")
-    current = st.session_state.image_map.get(slot, "")
-    if current and Path(current).exists():
-        st.image(current, use_container_width=True)
-        if st.button("🗑 Remove current image",
-                     key=f"d_del_{slot}", use_container_width=True):
-            st.session_state.image_map.pop(slot, None)
-            persist()
-            st.rerun()
-        st.markdown("---")
-
-    method = st.radio(
-        "How to provide this image:",
-        ["📁 Upload", "📋 Paste (Ctrl+V)", "🖼 Pick from TSSR"],
-        key=f"d_method_{slot}",
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-
-    if method == "📁 Upload":
-        upload = st.file_uploader(
-            "Upload image", type=["png", "jpg", "jpeg"],
-            key=f"d_up_{slot}", label_visibility="collapsed",
-        )
-        if upload:
-            path = save_upload(upload)
-            st.session_state.image_map[slot] = path
-            persist()
-            st.rerun()
-
-    elif method == "📋 Paste (Ctrl+V)":
-        st.caption("**Click the dashed box below, then press Ctrl+V.**")
-        result = paste_image(key=f"d_paste_{slot}")
-        if result:
-            cache_key = f"_pasted_{slot}_{result.get('size', 0)}"
-            if cache_key not in st.session_state:
-                workdir = ensure_workdir()
-                ext = result["mime"].split("/")[-1].replace("jpeg", "jpg")
-                dest = workdir / "uploads" / f"{slot}_{int(time.time())}.{ext}"
-                save_pasted_image(result, str(dest))
-                st.session_state.image_map[slot] = str(dest)
-                st.session_state[cache_key] = True
-                persist()
-                st.rerun()
-
-    elif method == "🖼 Pick from TSSR":
-        if not extracted:
-            st.warning("No extracted images. Upload an Ericsson TSSR first.")
-        else:
-            st.caption(f"{len(extracted)} images — click to select")
-            COLS = 4
-            rows = (len(extracted) + COLS - 1) // COLS
-            for r in range(rows):
-                cols = st.columns(COLS)
-                for c in range(COLS):
-                    idx = r * COLS + c
-                    if idx >= len(extracted):
-                        break
-                    img_path = extracted[idx]
-                    is_selected = current == img_path
-                    with cols[c]:
-                        st.image(img_path, use_container_width=True)
-                        if st.button(
-                            "✓" if is_selected else "Select",
-                            key=f"d_pick_{slot}_{idx}",
-                            use_container_width=True,
-                            type="primary" if is_selected else "secondary",
-                        ):
-                            st.session_state.image_map[slot] = img_path
-                            persist()
-                            st.rerun()
-
-
-# ═════════════════════════════════════════════════════════════
-# Header
-# ═════════════════════════════════════════════════════════════
-
-col_a, col_b, col_c = st.columns([3, 1, 1])
-with col_a:
-    st.title("📡 TSSR Automator")
-    st.caption("Excel masterlist + AI + Ericsson TSSR → Nokia TSSR DOCX")
-with col_b:
-    if st.button("🆕 New Site", use_container_width=True):
-        reset_to_new_site()
-        st.rerun()
-with col_c:
-    if st.button("↺ Clear All", use_container_width=True):
-        reset_to_new_site()
-        st.session_state.masterlist = None
-        st.rerun()
-
-
-# ═════════════════════════════════════════════════════════════
-# STEP 1 — Masterlist
-# ═════════════════════════════════════════════════════════════
-
-st.subheader("1 · Site Masterlist")
-
-if st.session_state.masterlist is None:
-    if not MASTERLIST_PATH.exists():
-        st.error(f"❌ Masterlist not found at `{MASTERLIST_PATH}`.")
-        st.stop()
-    try:
-        st.session_state.masterlist = SiteMasterlist(str(MASTERLIST_PATH))
-        st.success(f"✅ Loaded: `{MASTERLIST_PATH.name}`")
-    except Exception as e:
-        st.error(f"❌ Failed to load masterlist: {e}")
-        st.exception(e)
-        st.stop()
-else:
-    st.success(f"✅ Loaded: `{MASTERLIST_PATH.name}`")
-
-
-# ═════════════════════════════════════════════════════════════
-# STEP 2 — Select Site
-# ═════════════════════════════════════════════════════════════
-
-st.divider()
-st.subheader("2 · Select Site")
-
-plaids = st.session_state.masterlist.list_plaids()
-if not plaids:
-    st.warning("No PLAIDs found.")
-    st.stop()
-
-current_idx = 0
-if st.session_state.selected_plaid in plaids:
-    current_idx = plaids.index(st.session_state.selected_plaid) + 1
-
-site_id = st.selectbox(
-    "PLAID",
-    options=[""] + plaids,
-    index=current_idx,
-    help="Start typing to filter",
-)
-
-if site_id and site_id != st.session_state.selected_plaid:
-    st.session_state.selected_plaid = site_id
-    st.session_state.site_data = (
-        st.session_state.masterlist.get_site(site_id) or {}
-    )
-    st.session_state.ai_applied = False
-    persist()
-    st.rerun()
-
-if st.session_state.site_data:
-    site = st.session_state.site_data
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.text_input("Site ID",   site.get("site_id", ""),   disabled=True, key="disp_site_id")
-        st.text_input("Site Name", site.get("site_name", ""), disabled=True, key="disp_site_name")
-    with c2:
-        st.text_input("Region",    site.get("region", ""),    disabled=True, key="disp_region")
-        st.text_input("Towerco",   site.get("towerco", ""),   disabled=True, key="disp_towerco")
-    with c3:
-        st.text_input("FO Name",   site.get("fo_name", ""),   disabled=True, key="disp_fo_name")
-        st.text_input("FO Mobile", site.get("fo_mobile", ""), disabled=True, key="disp_fo_mobile")
-
-
 # ═════════════════════════════════════════════════════════════
 # STEP 3 — AI-Assisted Fields
 # ═════════════════════════════════════════════════════════════
@@ -461,7 +95,6 @@ if st.session_state.site_data:
 if st.session_state.site_data:
     st.divider()
 
-    # ── DIAGNOSTIC: prove which load_calc_page.py is actually imported ──
     try:
         import importlib
         import load_calc_page
@@ -524,7 +157,6 @@ if st.session_state.site_data:
             "💡 How to use",
         ])
 
-        # ─── Tab 1: OSM Map ───
         with tab_map:
             st.markdown("**Vicinity map preview**")
             st.caption(
@@ -532,10 +164,7 @@ if st.session_state.site_data:
                 "click 'Use as Vicinity Map' below to save a static snapshot."
             )
 
-            components.html(
-                _osm_embed_html(lat, lon, height=450),
-                height=470,
-            )
+            components.html(_osm_embed_html(lat, lon, height=450), height=470)
 
             col_a, col_b = st.columns([1, 1])
             with col_a:
@@ -547,10 +176,8 @@ if st.session_state.site_data:
                 ):
                     workdir = ensure_workdir()
                     dest = workdir / "uploads" / "vicinity_map_from_osm.png"
-
                     with st.spinner("Downloading static map…"):
                         result = _download_static_map(lat, lon, str(dest))
-
                     if result:
                         st.session_state.image_map["img_vicinity_map"] = result
                         persist()
@@ -569,7 +196,6 @@ if st.session_state.site_data:
                     f"#map=17/{lat}/{lon})"
                 )
 
-        # ─── Tab 2: Google Street View ───
         with tab_street:
             st.markdown("**Street View preview**")
             st.caption(
@@ -610,7 +236,6 @@ if st.session_state.site_data:
                     f"&viewpoint={lat},{lon})"
                 )
 
-        # ─── Tab 3: Instructions ───
         with tab_help:
             st.markdown("""
             ### How to capture maps and photos
@@ -648,7 +273,6 @@ if st.session_state.site_data:
             - Google Maps often has higher-resolution imagery for urban sites.
             """)
 
-        # ─── Quick actions ───
         st.markdown("---")
         st.markdown("**Quick actions:**")
         qc1, qc2, qc3 = st.columns(3)
@@ -896,7 +520,8 @@ if st.session_state.site_data:
         )
 
 
-# ═════════════════════════════════════════════════════════════# Sidebar
+# ═════════════════════════════════════════════════════════════
+# Sidebar
 # ═════════════════════════════════════════════════════════════
 
 with st.sidebar:
