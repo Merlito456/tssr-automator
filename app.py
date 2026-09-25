@@ -1,6 +1,11 @@
 # app.py
 """
-TSSR Automator v0.4 — Persistent state + gallery picker + real Ctrl+V paste.
+TSSR Automator v0.5
+- Excel masterlist (auto-loaded)
+- Ericsson TSSR PDF (image extraction)
+- Persistent state across refresh
+- Image grid with blue/black status indicators
+- Real Ctrl+V paste via custom component
 """
 import shutil
 import tempfile
@@ -36,7 +41,7 @@ st.set_page_config(
 
 
 # ═════════════════════════════════════════════════════════════
-# Session state
+# Session state — restore on startup
 # ═════════════════════════════════════════════════════════════
 
 DEFAULTS = {
@@ -66,6 +71,10 @@ if "_restored" not in st.session_state:
 
     st.session_state["_restored"] = True
 
+
+# ═════════════════════════════════════════════════════════════
+# Helpers
+# ═════════════════════════════════════════════════════════════
 
 def persist():
     """Save current session state to disk."""
@@ -108,40 +117,123 @@ def save_upload(uploaded_file) -> str:
 
 
 # ═════════════════════════════════════════════════════════════
-# Gallery picker
+# Image slot definitions
 # ═════════════════════════════════════════════════════════════
 
-def render_gallery(slot: str, label: str, extracted: list[str]):
+IMAGE_SLOTS = [
+    ("img_vicinity_map",           "Vicinity Map"),
+    ("img_site_photo_1",           "Site Photo 1"),
+    ("img_site_photo_2",           "Site Photo 2"),
+    ("img_site_photo_3",           "Site Photo 3"),
+    ("img_site_photo_4",           "Site Photo 4"),
+    ("img_olt_existing",           "OLT — Existing"),
+    ("img_olt_proposed",           "OLT — Proposed"),
+    ("RS1_load_sched_img",         "RS1 — Load Schedule"),
+    ("RS1_load_calc_img",          "RS1 — Load Calc"),
+    ("RS2_load_sched_img",         "RS2 — Load Schedule"),
+    ("RS2_load_calc_img",          "RS2 — Load Calc"),
+    ("RS1_tapping_img",            "RS1 — Tapping"),
+    ("RS2_tapping_img",            "RS2 — Tapping"),
+    ("equipment_room_layout_img",  "Equipment — Room Layout"),
+    ("equipment_cable_routing_img","Equipment — Cable Routing"),
+    ("transport_existing_1",       "Transport — Existing 1"),
+    ("transport_existing_2",       "Transport — Existing 2"),
+    ("transport_existing_3",       "Transport — Existing 3"),
+]
+
+
+# ═════════════════════════════════════════════════════════════
+# Image editor dialog
+# ═════════════════════════════════════════════════════════════
+
+@st.dialog("Image slot", width="large")
+def image_dialog(slot: str, label: str, extracted: list[str]):
+    """Modal dialog for editing one image slot."""
+    st.markdown(f"### {label}")
+    st.caption(f"Slot key: `{slot}`")
+
+    # Current image preview
     current = st.session_state.image_map.get(slot, "")
+    if current and Path(current).exists():
+        st.image(current, use_container_width=True)
+        if st.button(
+            "🗑 Remove current image",
+            key=f"d_del_{slot}",
+            use_container_width=True,
+        ):
+            st.session_state.image_map.pop(slot, None)
+            persist()
+            st.rerun()
+        st.markdown("---")
 
-    if not extracted:
-        st.caption("_No extracted images yet. Upload an Ericsson TSSR first._")
-        return
+    method = st.radio(
+        "How to provide this image:",
+        ["📁 Upload", "📋 Paste (Ctrl+V)", "🖼 Pick from TSSR"],
+        key=f"d_method_{slot}",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
-    st.caption(f"{len(extracted)} images available — click Select to use one.")
-    COLS = 4
-    rows = (len(extracted) + COLS - 1) // COLS
+    # ─── Upload ───
+    if method == "📁 Upload":
+        upload = st.file_uploader(
+            "Upload image",
+            type=["png", "jpg", "jpeg"],
+            key=f"d_up_{slot}",
+            label_visibility="collapsed",
+        )
+        if upload:
+            path = save_upload(upload)
+            st.session_state.image_map[slot] = path
+            persist()
+            st.rerun()
 
-    for r in range(rows):
-        cols = st.columns(COLS)
-        for c in range(COLS):
-            idx = r * COLS + c
-            if idx >= len(extracted):
-                break
-            img_path = extracted[idx]
-            is_selected = current == img_path
+    # ─── Paste (Ctrl+V) ───
+    elif method == "📋 Paste (Ctrl+V)":
+        st.caption(
+            "**Click the dashed box below, then press Ctrl+V.** "
+            "Or drag an image onto it."
+        )
+        result = paste_image(key=f"d_paste_{slot}")
+        if result:
+            cache_key = f"_pasted_{slot}_{result.get('size', 0)}"
+            if cache_key not in st.session_state:
+                workdir = ensure_workdir()
+                ext = result["mime"].split("/")[-1].replace("jpeg", "jpg")
+                dest = workdir / "uploads" / f"{slot}_{int(time.time())}.{ext}"
+                save_pasted_image(result, str(dest))
+                st.session_state.image_map[slot] = str(dest)
+                st.session_state[cache_key] = True
+                persist()
+                st.rerun()
 
-            with cols[c]:
-                st.image(img_path, use_container_width=True)
-                if st.button(
-                    "✓ Selected" if is_selected else "Select",
-                    key=f"pick_{slot}_{idx}",
-                    use_container_width=True,
-                    type="primary" if is_selected else "secondary",
-                ):
-                    st.session_state.image_map[slot] = img_path
-                    persist()
-                    st.rerun()
+    # ─── Pick from TSSR extracts ───
+    elif method == "🖼 Pick from TSSR":
+        if not extracted:
+            st.warning("No extracted images. Upload an Ericsson TSSR first.")
+        else:
+            st.caption(f"{len(extracted)} images — click to select")
+            COLS = 4
+            rows = (len(extracted) + COLS - 1) // COLS
+            for r in range(rows):
+                cols = st.columns(COLS)
+                for c in range(COLS):
+                    idx = r * COLS + c
+                    if idx >= len(extracted):
+                        break
+                    img_path = extracted[idx]
+                    is_selected = current == img_path
+                    with cols[c]:
+                        st.image(img_path, use_container_width=True)
+                        if st.button(
+                            "✓" if is_selected else "Select",
+                            key=f"d_pick_{slot}_{idx}",
+                            use_container_width=True,
+                            type="primary" if is_selected else "secondary",
+                        ):
+                            st.session_state.image_map[slot] = img_path
+                            persist()
+                            st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -153,13 +245,19 @@ with col_a:
     st.title("📡 TSSR Automator")
     st.caption("Excel masterlist + Ericsson TSSR → Nokia TSSR DOCX")
 with col_b:
-    if st.button("🆕 New Site", use_container_width=True,
-                 help="Clear current work and start over"):
+    if st.button(
+        "🆕 New Site",
+        use_container_width=True,
+        help="Clear current work and start over",
+    ):
         reset_to_new_site()
         st.rerun()
 with col_c:
-    if st.button("↺ Clear All", use_container_width=True,
-                 help="Reset everything including masterlist"):
+    if st.button(
+        "↺ Clear All",
+        use_container_width=True,
+        help="Reset everything including masterlist",
+    ):
         reset_to_new_site()
         st.session_state.masterlist = None
         st.rerun()
@@ -211,7 +309,9 @@ site_id = st.selectbox(
 
 if site_id and site_id != st.session_state.selected_plaid:
     st.session_state.selected_plaid = site_id
-    st.session_state.site_data = st.session_state.masterlist.get_site(site_id) or {}
+    st.session_state.site_data = (
+        st.session_state.masterlist.get_site(site_id) or {}
+    )
     persist()
     st.rerun()
 
@@ -265,7 +365,8 @@ if st.session_state.site_data:
             st.rerun()
     else:
         st.success(
-            f"✅ Ericsson TSSR loaded ({len(st.session_state.ericsson_images)} images)"
+            f"✅ Ericsson TSSR loaded "
+            f"({len(st.session_state.ericsson_images)} images)"
         )
         if st.button("🗑 Clear Ericsson TSSR", key="clear_ericsson"):
             st.session_state.ericsson_docx = None
@@ -275,99 +376,47 @@ if st.session_state.site_data:
 
 
 # ═════════════════════════════════════════════════════════════
-# STEP 4 — Images
+# STEP 4 — Images (grid + dialog)
 # ═════════════════════════════════════════════════════════════
 
 if st.session_state.site_data:
     st.divider()
     st.subheader("4 · Images")
-    st.caption("For each slot: upload, paste (Ctrl+V), or pick from TSSR extracts.")
+
+    filled = sum(
+        1 for slot, _ in IMAGE_SLOTS
+        if st.session_state.image_map.get(slot)
+        and Path(st.session_state.image_map[slot]).exists()
+    )
+    st.caption(
+        f"**{filled} / {len(IMAGE_SLOTS)}** slots filled. "
+        f"Click any row to upload, paste, or pick an image."
+    )
 
     extracted = st.session_state.ericsson_images
 
-    IMAGE_SLOTS = [
-        ("img_vicinity_map",           "Vicinity Map"),
-        ("img_site_photo_1",           "Site Photo 1"),
-        ("img_site_photo_2",           "Site Photo 2"),
-        ("img_site_photo_3",           "Site Photo 3"),
-        ("img_site_photo_4",           "Site Photo 4"),
-        ("img_olt_existing",           "OLT — Existing"),
-        ("img_olt_proposed",           "OLT — Proposed"),
-        ("RS1_load_sched_img",         "RS1 — Load Schedule"),
-        ("RS1_load_calc_img",          "RS1 — Load Calc"),
-        ("RS2_load_sched_img",         "RS2 — Load Schedule"),
-        ("RS2_load_calc_img",          "RS2 — Load Calc"),
-        ("RS1_tapping_img",            "RS1 — Tapping"),
-        ("RS2_tapping_img",            "RS2 — Tapping"),
-        ("equipment_room_layout_img",  "Equipment — Room Layout"),
-        ("equipment_cable_routing_img","Equipment — Cable Routing"),
-        ("transport_existing_1",       "Transport — Existing 1"),
-        ("transport_existing_2",       "Transport — Existing 2"),
-        ("transport_existing_3",       "Transport — Existing 3"),
-    ]
+    COLS = 3
+    rows = (len(IMAGE_SLOTS) + COLS - 1) // COLS
 
-    tabs = st.tabs([label for _, label in IMAGE_SLOTS])
-
-    for tab, (slot, label) in zip(tabs, IMAGE_SLOTS):
-        with tab:
-            # ─── Current selection preview ───
+    for r in range(rows):
+        cols = st.columns(COLS)
+        for c in range(COLS):
+            idx = r * COLS + c
+            if idx >= len(IMAGE_SLOTS):
+                break
+            slot, label = IMAGE_SLOTS[idx]
             current = st.session_state.image_map.get(slot, "")
-            if current and Path(current).exists():
-                st.markdown("**Current selection:**")
-                pcol1, pcol2 = st.columns([3, 1])
-                with pcol1:
-                    st.image(current, use_container_width=True)
-                with pcol2:
-                    if st.button("🗑 Remove", key=f"del_{slot}", use_container_width=True):
-                        st.session_state.image_map.pop(slot, None)
-                        persist()
-                        st.rerun()
-                st.markdown("---")
+            has_image = bool(current and Path(current).exists())
 
-            # ─── Input method ───
-            method = st.radio(
-                "How to provide this image:",
-                ["📁 Upload", "📋 Paste (Ctrl+V)", "🖼 Pick from TSSR"],
-                key=f"method_{slot}",
-                horizontal=True,
-                label_visibility="collapsed",
-            )
-
-            if method == "📁 Upload":
-                upload = st.file_uploader(
-                    "Upload image",
-                    type=["png", "jpg", "jpeg"],
-                    key=f"up_{slot}",
-                    label_visibility="collapsed",
-                )
-                if upload:
-                    path = save_upload(upload)
-                    st.session_state.image_map[slot] = path
-                    persist()
-                    st.rerun()
-
-            elif method == "📋 Paste (Ctrl+V)":
-                st.caption(
-                    "**Click the dashed box below, then press Ctrl+V** "
-                    "to paste a screenshot. Alternatively, drag an image file onto it."
-                )
-                result = paste_image(key=f"paste_{slot}")
-
-                if result:
-                    # Only save once per unique paste
-                    cache_key = f"_pasted_{slot}_{result.get('size', 0)}"
-                    if cache_key not in st.session_state:
-                        workdir = ensure_workdir()
-                        ext = result["mime"].split("/")[-1].replace("jpeg", "jpg")
-                        dest = workdir / "uploads" / f"{slot}_{int(time.time())}.{ext}"
-                        save_pasted_image(result, str(dest))
-                        st.session_state.image_map[slot] = str(dest)
-                        st.session_state[cache_key] = True
-                        persist()
-                        st.rerun()
-
-            elif method == "🖼 Pick from TSSR":
-                render_gallery(slot, label, extracted)
+            with cols[c]:
+                icon = "🔵" if has_image else "⚫"
+                if st.button(
+                    f"{icon}  {label}",
+                    key=f"open_{slot}",
+                    use_container_width=True,
+                    type="primary" if has_image else "secondary",
+                ):
+                    image_dialog(slot, label, extracted)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -410,7 +459,6 @@ if st.session_state.site_data:
         st.session_state.materials[f"{key}_unit"] = unit_val
         st.session_state.materials[f"{key}_qty"]  = qty_val
 
-    # Persist on any change
     if st.button("💾 Save materials", key="save_materials"):
         persist()
         st.success("Saved")
@@ -496,7 +544,7 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.caption("v0.4 · Ctrl+V paste enabled")
+    st.caption("v0.5 · Image grid + Ctrl+V paste")
 
     if st.session_state.get("selected_plaid"):
         st.success(f"Working on: **{st.session_state.selected_plaid}**")
