@@ -2,15 +2,15 @@
 """
 AI-assisted field extraction via external LLM (Gemini / ChatGPT).
 User copies a prompt → feeds to LLM → pastes JSON back into the app.
+
+NOTE: work_permit, access_requirement, and site_key_location are NOT
+extracted by AI. They are derived by the app from the masterlist +
+towerco rules (see towercо_rules.py).
 """
 from __future__ import annotations
 import json
 import re
 
-
-# ═════════════════════════════════════════════════════════════
-# The prompt — copy/paste friendly, strict JSON output
-# ═════════════════════════════════════════════════════════════
 
 EXTRACTION_PROMPT = """You are a telecom site survey analyst extracting data from an Ericsson TSSR (Technical Site Survey Report).
 
@@ -25,10 +25,9 @@ CRITICAL RULES
 4. For list fields, only include values you actually found.
 5. Booleans must be true or false (lowercase, JSON style).
 6. When a field has a DEFAULT, use it if the TSSR doesn't explicitly state that field.
-7. Extract fields IN THE ORDER LISTED. Some fields depend on earlier ones.
 
 ═══════════════════════════════════════════════════════════════
-FIELD-BY-FIELD GUIDE (extract in this exact order)
+FIELD-BY-FIELD GUIDE
 ═══════════════════════════════════════════════════════════════
 
 "site_class"
@@ -66,10 +65,6 @@ FIELD-BY-FIELD GUIDE (extract in this exact order)
   NOTE: Do NOT use "City" or "Greenfield" here — those belong to site_type.
   EXAMPLE: "Site Profile: GT Wireless" -> "GT Wireless"
   If not found, use "".
-
-"site_key_location"
-  DO NOT EXTRACT. This field comes from the masterlist (Column M).
-  Always return "" for this field.
 
 "site_owner"
   WHERE: "Site Owner" checkboxes
@@ -115,8 +110,17 @@ FIELD-BY-FIELD GUIDE (extract in this exact order)
   WHERE: "By Boat" field. If empty or N/A, use "N/A".
 
 ═══════════════════════════════════════════════════════════════
+DO NOT EXTRACT THESE FIELDS
+═══════════════════════════════════════════════════════════════
+The following fields are derived by the application, NOT by you.
+Return "" for all of them:
+
+  "site_key_location"     — comes from the masterlist (Column M)
+  "work_permit"           — derived from towercо rules
+  "access_requirement"    — derived from towercо rules
+
+═══════════════════════════════════════════════════════════════
 REQUIRED JSON SCHEMA — return EXACTLY this structure
-(Note: access_requirement comes BEFORE work_permit)
 ═══════════════════════════════════════════════════════════════
 {
   "site_class": "",
@@ -142,7 +146,6 @@ REQUIRED JSON SCHEMA — return EXACTLY this structure
 
 ═══════════════════════════════════════════════════════════════
 EXAMPLE OUTPUT for a typical site
-(access_requirement is "Office Hours" so work_permit is "")
 ═══════════════════════════════════════════════════════════════
 {
   "site_class": "C3",
@@ -154,34 +157,8 @@ EXAMPLE OUTPUT for a typical site
   "site_key_location": "",
   "site_owner": "TCO",
   "site_security": ["E-LOCK"],
-  "access_requirement": "Office Hours",
+  "access_requirement": "",
   "work_permit": "",
-  "site_type": "Greenfield/Outdoor",
-  "site_accessible": true,
-  "no_bridge": "N/A",
-  "foot_trail": "N/A",
-  "bridge_ton": "N/A",
-  "foot_bridge": "N/A",
-  "distance_m": "N/A",
-  "by_boat": "N/A"
-}
-
-═══════════════════════════════════════════════════════════════
-SECOND EXAMPLE (access_requirement contains RAAWA,
-so work_permit is "RAAWA")
-═══════════════════════════════════════════════════════════════
-{
-  "site_class": "C3",
-  "room_access": "Outdoor site",
-  "cabin_location": "Ground Level",
-  "flood_history": "N/A",
-  "hauling_remarks": "N/A",
-  "site_profile": "GT Wireless",
-  "site_key_location": "",
-  "site_owner": "TCO",
-  "site_security": ["E-LOCK"],
-  "access_requirement": "RAAWA, LILO, Approved Ticket",
-  "work_permit": "RAAWA",
   "site_type": "Greenfield/Outdoor",
   "site_accessible": true,
   "no_bridge": "N/A",
@@ -197,10 +174,6 @@ NOW EXTRACT FROM THIS TSSR:
 ═══════════════════════════════════════════════════════════════
 """
 
-
-# ═════════════════════════════════════════════════════════════
-# Expected fields + type info
-# ═════════════════════════════════════════════════════════════
 
 EXPECTED_FIELDS = {
     "site_class":         "str",
@@ -225,10 +198,6 @@ EXPECTED_FIELDS = {
 }
 
 
-# ═════════════════════════════════════════════════════════════
-# Allowed choices per field (for validation)
-# ═════════════════════════════════════════════════════════════
-
 FIELD_CHOICES = {
     "site_class":     {"C1", "C2", "C3", "C4", "C5", "Custom", ""},
     "room_access":    {"Outdoor site", "Indoor site", "No room access",
@@ -242,50 +211,35 @@ FIELD_CHOICES = {
     "site_owner":     {"Globe", "Private", "Government", "TCO", ""},
     "site_security":  {"E-LOCK", "Caretaker", "Manned",
                        "Roving Security", "Others"},
-    "work_permit":    {"RAAWA", "Others", ""},
     "site_type":      {"Greenfield/Outdoor", "Street Cabinet",
                        "Indoor", "Others", ""},
 }
 
 
-# ═════════════════════════════════════════════════════════════
-# Public API
-# ═════════════════════════════════════════════════════════════
-
 def build_prompt() -> str:
-    """Return the prompt string shown to the user."""
     return EXTRACTION_PROMPT
 
 
 def extract_json_from_response(text: str) -> dict | None:
-    """Robustly extract JSON from an AI response."""
     if not text:
         return None
-
     text = text.strip()
-
-    # Strip markdown fences
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-
-    # Find first { ... } block
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(0))
         except json.JSONDecodeError:
             pass
-
     return None
 
 
 def _match_choice(value: str, choices: set) -> str:
-    """Case-insensitive match against allowed choices."""
     if value in choices:
         return value
     for c in choices:
@@ -294,60 +248,22 @@ def _match_choice(value: str, choices: set) -> str:
     return ""
 
 
-def _enforce_work_permit_logic(clean: dict, warnings: list[str]) -> None:
-    """
-    Post-process: derive work_permit from access_requirement.
-
-    If the AI didn't already set work_permit correctly, apply the rule:
-      - access_requirement contains "RAAWA" -> work_permit = "RAAWA"
-      - access_requirement contains "Others" -> work_permit = "Others"
-      - otherwise -> work_permit = ""
-    """
-    access = str(clean.get("access_requirement", "")).upper()
-    current_permit = clean.get("work_permit", "")
-
-    # Determine correct value from access_requirement
-    if "RAAWA" in access:
-        expected_permit = "RAAWA"
-    elif "OTHERS" in access:
-        expected_permit = "Others"
-    else:
-        expected_permit = ""
-
-    if current_permit != expected_permit:
-        if current_permit:
-            warnings.append(
-                f"`work_permit`: overridden '{current_permit}' -> "
-                f"'{expected_permit}' based on access_requirement"
-            )
-        clean["work_permit"] = expected_permit
-
-
 def validate_and_normalize(data: dict) -> tuple[dict, list[str]]:
-    """
-    Validate AI JSON, coerce types, enforce choices.
-    Returns (clean_dict, warnings_list).
-    """
     warnings = []
     clean = {}
-
     if not isinstance(data, dict):
         return {}, ["Response is not a JSON object."]
 
     for key, expected in EXPECTED_FIELDS.items():
         val = data.get(key)
-
-        # Missing field
         if val is None:
             clean[key] = [] if expected == "list" else \
                          False if expected == "bool" else ""
             warnings.append(f"Missing field: `{key}`")
             continue
 
-        # ─── Type coercion ───
         if expected == "str":
             clean[key] = str(val).strip()
-
         elif expected == "list":
             if isinstance(val, list):
                 clean[key] = [str(v).strip() for v in val if str(v).strip()]
@@ -356,7 +272,6 @@ def validate_and_normalize(data: dict) -> tuple[dict, list[str]]:
             else:
                 clean[key] = []
                 warnings.append(f"`{key}` expected a list.")
-
         elif expected == "bool":
             if isinstance(val, bool):
                 clean[key] = val
@@ -365,7 +280,6 @@ def validate_and_normalize(data: dict) -> tuple[dict, list[str]]:
             else:
                 clean[key] = bool(val)
 
-        # ─── Enforce choices for string fields ───
         if key in FIELD_CHOICES and expected == "str":
             allowed = FIELD_CHOICES[key]
             if clean[key] not in allowed:
@@ -382,7 +296,6 @@ def validate_and_normalize(data: dict) -> tuple[dict, list[str]]:
                     )
                     clean[key] = ""
 
-        # ─── Enforce choices for list fields ───
         if key in FIELD_CHOICES and expected == "list":
             allowed = FIELD_CHOICES[key]
             original = list(clean[key])
@@ -393,7 +306,9 @@ def validate_and_normalize(data: dict) -> tuple[dict, list[str]]:
                     f"`{key}`: removed invalid values {sorted(removed)}"
                 )
 
-    # ─── Post-processing: derive work_permit from access_requirement ───
-    _enforce_work_permit_logic(clean, warnings)
+    # Force skip fields to empty — they're derived elsewhere
+    for skip in ("work_permit", "access_requirement", "site_key_location"):
+        if skip in clean:
+            clean[skip] = ""
 
     return clean, warnings
