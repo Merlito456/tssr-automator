@@ -1,6 +1,7 @@
 # excel_loader.py
 """
 Load and query the MINDANAO site masterlist Excel.
+Self-diagnosing — prints what it finds if the default names don't match.
 """
 from __future__ import annotations
 import re
@@ -9,119 +10,163 @@ from typing import Optional
 import pandas as pd
 
 
-SHEET_NAME = "GLOBE SITE MASTERLIST"
-HEADER_ROW = 0  # 0-indexed; Excel row 1
+# ─── CONFIG — we'll auto-detect if these don't match ─────────
+DEFAULT_SHEET = "GLOBE SITE MASTERLIST"
+HEADER_ROW = 0
 
 
-# Canonical column names (post-normalization)
-COLUMNS = {
-    "plaid":          "PLAID",
-    "site":           "SITE",
-    "wireline":       "WIRELINE_NAME",
-    "bcf":            "BCF_NAME",
-    "region":         "REGION",
-    "province":       "PROVINCE",
-    "municipality":   "MUNICIPALITY",
-    "barangay":       "BARANGAY",
-    "territory":      "TERRITORY",
-    "latitude":       "LATITUDE",
-    "longitude":      "LONGITUDE",
-    "site_add":       "SITE_ADD",
-    "assign_hub":     "ASSIGN_HUB",
-    "towerco":        "TOWERCO",
-    "new_area":       "NEW ASSIGN_AREA",
-    "new_area_name":  "NEW ASSIGN_AREA NAME",
-    "new_hub":        "NEW ASSIGN_HUB",
-    "engineer_ah":    "NEW ENGINEER_AH",
-    "engineer_anm1":  "NEW ENGINEER_ANM1",
-    "engineer_anm1_id": "NEW ENGINEER_ANM1 ID NUMBER",
-    "contact_number": "CONTACT NUMBER",
-    "anm_head":       "NEW ANM HEAD",
-    "roh":            "NEW ROH",
-}
+def _normalize_col(name: str) -> str:
+    """Strip + collapse whitespace. 'WIRELINE_NAME ' → 'WIRELINE_NAME'."""
+    return re.sub(r"\s+", " ", str(name).strip())
+
+
+def _find_sheet(xl: pd.ExcelFile, target: str) -> str:
+    """Find sheet by exact match, then case-insensitive, then first."""
+    if target in xl.sheet_names:
+        return target
+
+    # Case-insensitive
+    for s in xl.sheet_names:
+        if s.strip().upper() == target.strip().upper():
+            return s
+
+    # Not found — raise with helpful message
+    raise ValueError(
+        f"Sheet '{target}' not found. Available sheets: {xl.sheet_names}"
+    )
 
 
 class SiteMasterlist:
     """Wrapper around the Excel masterlist."""
 
-    def __init__(self, xlsx_path: str):
+    def __init__(self, xlsx_path: str, sheet_name: str = DEFAULT_SHEET):
         self.path = Path(xlsx_path)
         if not self.path.exists():
             raise FileNotFoundError(f"Excel not found: {xlsx_path}")
 
+        # Discover actual sheet name
+        xl = pd.ExcelFile(self.path)
+        actual_sheet = _find_sheet(xl, sheet_name)
+        self.sheet_name = actual_sheet
+
+        # Load dataframe
         self.df = pd.read_excel(
             self.path,
-            sheet_name=SHEET_NAME,
+            sheet_name=actual_sheet,
             header=HEADER_ROW,
-            dtype=str,        # keep everything as string, convert later
+            dtype=str,
         ).fillna("")
 
-        # Normalize column headers — strip and collapse whitespace
-        self.df.columns = [
-            re.sub(r"\s+", " ", str(c).strip()) for c in self.df.columns
-        ]
+        # Normalize headers — strip trailing/leading spaces
+        self.df.columns = [_normalize_col(c) for c in self.df.columns]
 
-        # Normalize PLAID values
-        plaid_col = COLUMNS["plaid"]
-        self.df[plaid_col] = self.df[plaid_col].str.strip().str.upper()
+        # Diagnostic dump (only shows on first run)
+        print(f"✅ Loaded sheet: {actual_sheet}")
+        print(f"   Rows: {len(self.df)}")
+        print(f"   Columns ({len(self.df.columns)}): {list(self.df.columns)}")
+
+        # Normalize PLAID
+        plaid_col = self._find_column("PLAID")
+        if plaid_col:
+            self.df[plaid_col] = (
+                self.df[plaid_col].astype(str).str.strip().str.upper()
+            )
+
+    # ─────────────────────────────────────────────────────────
+    # Column resolution — flexible to naming variations
+    # ─────────────────────────────────────────────────────────
+
+    def _find_column(self, target: str) -> Optional[str]:
+        """
+        Find a column by exact match, then by normalized comparison.
+        Handles trailing spaces, case differences.
+        """
+        target_norm = _normalize_col(target).upper()
+
+        # Exact
+        if target in self.df.columns:
+            return target
+
+        # Normalized match
+        for c in self.df.columns:
+            if _normalize_col(c).upper() == target_norm:
+                return c
+
+        # Fallback — substring match
+        for c in self.df.columns:
+            if target_norm in _normalize_col(c).upper():
+                return c
+
+        return None
+
+    # ─────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────
 
     def get_site(self, plaid: str) -> Optional[dict]:
-        """Return a dict of site data for the given PLAID, or None."""
-        plaid = plaid.strip().upper()
-        rows = self.df[self.df[COLUMNS["plaid"]] == plaid]
-        if rows.empty:
+        plaid = str(plaid).strip().upper()
+        plaid_col = self._find_column("PLAID")
+        if not plaid_col:
             return None
 
+        rows = self.df[self.df[plaid_col] == plaid]
+        if rows.empty:
+            return None
         row = rows.iloc[0]
 
-        def val(key: str) -> str:
-            col = COLUMNS.get(key)
-            if not col or col not in self.df.columns:
+        def val(field_name: str) -> str:
+            col = self._find_column(field_name)
+            if not col:
                 return ""
             return str(row.get(col, "")).strip()
 
+        # Site address: Barangay + Municipality + Province
+        address_parts = [
+            val("BARANGAY"),
+            val("MUNICIPALITY"),
+            val("PROVINCE"),
+        ]
+        site_address = ", ".join(p for p in address_parts if p)
+
+        # Coordinates
+        lat, lon = val("LATITUDE"), val("LONGITUDE")
+        try:
+            coords = f"{float(lat):.5f}, {float(lon):.5f}" if lat and lon else ""
+        except ValueError:
+            coords = f"{lat}, {lon}".strip(", ")
+
+        # FO = column S ("NEW ENGINEER_ANM1")
+        # FO number = column U ("CONTACT NUMBER")
+        fo_name   = val("NEW ENGINEER_ANM1")
+        fo_mobile = val("CONTACT NUMBER")
+
         return {
-            "site_id":       val("plaid"),
-            "site_name":     val("site"),
-            "region":        val("region"),
-            "province":      val("province"),
-            "municipality":  val("municipality"),
-            "barangay":      val("barangay"),
-            "latitude":      val("latitude"),
-            "longitude":     val("longitude"),
-            "site_add":      val("site_add"),
-            "towerco":       val("towerco"),
-            "assign_hub":    val("assign_hub"),
-            "site_key_location": val("assign_hub") or val("new_hub"),
-            "fo_name":       val("engineer_anm1"),
-            "fo_mobile":     val("contact_number"),
-            "site_contact_person": val("engineer_anm1"),
-            "site_contact_mobile": val("contact_number"),
-            "territory":     val("territory"),
+            "site_id":   val("PLAID"),
+            "site_name": val("SITE"),
+            "region":    val("REGION"),
+            "province":  val("PROVINCE"),
+            "municipality": val("MUNICIPALITY"),
+            "barangay":  val("BARANGAY"),
+            "latitude":  lat,
+            "longitude": lon,
+            "site_add":  site_address,
+            "site_coords": coords,
+            "towerco":   val("TOWERCO"),
+            "assign_hub": val("ASSIGN_HUB"),
+            "site_key_location": val("ASSIGN_HUB") or val("NEW ASSIGN_HUB"),
+            "fo_name":      fo_name,
+            "fo_mobile":    fo_mobile,
+            "site_contact_person": fo_name,
+            "site_contact_mobile": fo_mobile,
+            "territory": val("TERRITORY"),
         }
 
     def list_plaids(self) -> list[str]:
-        """Return sorted list of all PLAIDs — useful for autocomplete."""
-        return sorted(self.df[COLUMNS["plaid"]].dropna().unique().tolist())
-
-
-def compose_address(site: dict) -> str:
-    """Barangay, Municipality, Province."""
-    parts = [
-        site.get("barangay", "").strip(),
-        site.get("municipality", "").strip(),
-        site.get("province", "").strip(),
-    ]
-    return ", ".join(p for p in parts if p)
-
-
-def compose_coords(site: dict) -> str:
-    """'6.63979, 124.06598' — 5 decimal places."""
-    lat = site.get("latitude", "").strip()
-    lon = site.get("longitude", "").strip()
-    if not lat or not lon:
-        return ""
-    try:
-        return f"{float(lat):.5f}, {float(lon):.5f}"
-    except ValueError:
-        return f"{lat}, {lon}"  # fall back to raw strings
+        plaid_col = self._find_column("PLAID")
+        if not plaid_col:
+            return []
+        return sorted(
+            self.df[plaid_col].dropna().astype(str)
+              .str.strip().str.upper()
+              .unique().tolist()
+        )
