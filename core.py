@@ -285,8 +285,8 @@ def build_context(
     ctx["sec_others"]     = cb("OTHERS" in sec)
 
     # --- Work permit + Access requirement (HARDCODED FROM TOWERCO) ---
-    towercо = pick(site.get("towerco"), ericsson_fields.get("towerco"))
-    permits = get_permits_for_towerco(towercо)
+    towerco_value = pick(site.get("towerco"), ericsson_fields.get("towerco"))
+    permits = get_permits_for_towerco(towerco_value)
 
     ctx["work_permit"]        = permits["work_permit"]
     ctx["access_requirement"] = permits["access_requirement"]
