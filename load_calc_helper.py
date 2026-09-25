@@ -31,8 +31,11 @@ NOKIA_MF2_LOAD = {
 
 LOAD_CALC_PROMPT = """You are a telecom DC power analyst reading an Ericsson TSSR.
 
-Extract ONLY the EXISTING rectifier / battery data and return ONE JSON object.
+Extract ONLY the __WHICH__ rectifier / battery data and return ONE JSON object.
 No markdown, no preamble, no trailing text.
+
+If the TSSR documents more than one rectifier system (RS1, RS2, ...), extract
+ONLY the one identified above and ignore the others.
 
 The proposed load is ALWAYS a single Nokia MF-2 OLT and is filled by the app,
 so do NOT return any proposed-load fields.
@@ -90,8 +93,19 @@ EXPECTED = {
 }
 
 
-def build_prompt() -> str:
-    return LOAD_CALC_PROMPT
+def build_prompt(which_rectifier: str = "EXISTING") -> str:
+    """
+    Return the extraction prompt, customized for a specific rectifier.
+
+    Args:
+        which_rectifier: human-readable identifier of the rectifier to
+            extract, e.g. "RS1", "RS2", or the default "EXISTING".
+
+    Returns:
+        The prompt string with `__WHICH__` replaced.
+    """
+    label = (which_rectifier or "EXISTING").strip().upper()
+    return LOAD_CALC_PROMPT.replace("__WHICH__", label)
 
 
 def extract_json(text: str) -> dict | None:
@@ -179,5 +193,5 @@ def compute_sufficiency(d: dict) -> dict:
         "available_rectifier_capacity_a": avail_a,
         "percent_utilization":            pct_util,
         "bbut_hours":                     bbut_h,
-        "system_voltage_v":               voltage,   # handy for the template
+        "system_voltage_v":               voltage,
     }
