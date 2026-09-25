@@ -3,3 +3,4 @@ pdf2docx
 python-docx
 docxtpl
 Pillow
+openpyxl
