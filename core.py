@@ -7,8 +7,11 @@ AI extraction    -> supplementary fields (fills gaps)
 Ericsson TSSR    -> images + fallback fields
 User uploads     -> optional image overrides
 
-Work permit + Access requirement are HARDCODED from towerco rules
+Work permit + Access requirement are HARDCODED from towercо rules
 (see permit_rules.py) - not from AI.
+
+Images are auto-fitted to their target cell aspect ratio to
+fill the box edge-to-edge.
 """
 
 from __future__ import annotations
@@ -127,6 +130,57 @@ def make_grid(images: list[str], max_width: int = 1200,
 
 
 # =============================================================
+# 3b. Image aspect-ratio fitter (crop to match target shape)
+# =============================================================
+
+def fit_image_to_aspect(
+    src_path: str,
+    dest_path: str,
+    target_aspect: float,
+) -> str:
+    """
+    Crop an image to match the target aspect ratio (width/height).
+    Centers the crop. Returns the path to the fitted image.
+
+    If the image is already close to the target aspect, saves a copy as-is.
+    """
+    try:
+        img = Image.open(src_path).convert("RGB")
+    except Exception as e:
+        print(f"[fit_image_to_aspect] Could not open {src_path}: {e}")
+        return src_path
+
+    w, h = img.size
+    if h == 0 or w == 0:
+        return src_path
+
+    current_aspect = w / h
+
+    # Already close enough — just copy
+    if abs(current_aspect - target_aspect) < 0.02:
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        img.save(dest, quality=88)
+        return str(dest)
+
+    if current_aspect > target_aspect:
+        # Image is wider than target — crop the left/right sides
+        new_w = int(h * target_aspect)
+        x_offset = (w - new_w) // 2
+        img = img.crop((x_offset, 0, x_offset + new_w, h))
+    else:
+        # Image is taller than target — crop top/bottom
+        new_h = int(w / target_aspect)
+        y_offset = (h - new_h) // 2
+        img = img.crop((0, y_offset, w, y_offset + new_h))
+
+    dest = Path(dest_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    img.save(dest, quality=88)
+    return str(dest)
+
+
+# =============================================================
 # 4. Checkbox helper
 # =============================================================
 
@@ -143,9 +197,6 @@ def merge_ai_fields(site: dict, ai_fields: dict) -> dict:
     """
     Merge AI-extracted fields into the site dict.
     Priority: Excel > AI > existing site dict > empty.
-
-    Fields derived by the app (work_permit, access_requirement,
-    site_key_location) are SKIPPED - they're computed elsewhere.
     """
     SKIP_FIELDS = {"work_permit", "access_requirement", "site_key_location"}
 
@@ -181,10 +232,7 @@ def build_context(
     ericsson_fields: dict,
     images: dict,
 ) -> dict:
-    """
-    Merge site data (Excel + AI), Ericsson TSSR values, and image paths
-    into a single dict matching the template's tag contract.
-    """
+    """Merge site data (Excel + AI), Ericsson TSSR values, image paths."""
     ctx = {}
 
     def pick(*sources, default=""):
@@ -201,7 +249,7 @@ def build_context(
     ctx["site_coords"]  = pick(site.get("site_coords"),  compose_coords_from(site))
     ctx["towerco"]      = pick(site.get("towerco"),      ericsson_fields.get("towerco"))
 
-    # --- Contact (FO = Column S, phone = Column U) ---
+    # --- Contact ---
     ctx["site_contact_person"] = pick(site.get("site_contact_person"), site.get("fo_name"))
     ctx["site_contact_mobile"] = pick(site.get("site_contact_mobile"), site.get("fo_mobile"))
     ctx["fo_name"]             = pick(site.get("fo_name"))
@@ -285,8 +333,8 @@ def build_context(
     ctx["sec_others"]     = cb("OTHERS" in sec)
 
     # --- Work permit + Access requirement (HARDCODED FROM TOWERCO) ---
-    towerco_value = pick(site.get("towerco"), ericsson_fields.get("towerco"))
-    permits = get_permits_for_towerco(towerco_value)
+    towercо = pick(site.get("towerco"), ericsson_fields.get("towerco"))
+    permits = get_permits_for_towerco(towercо)
 
     ctx["work_permit"]        = permits["work_permit"]
     ctx["access_requirement"] = permits["access_requirement"]
@@ -382,46 +430,107 @@ def build_site_remarks(site: dict, ericsson: dict) -> str:
 # 8. Generate the final DOCX
 # =============================================================
 
+# Target image widths (mm) — tuned to fill their template cells
+IMAGE_WIDTHS_MM = {
+    # Full width (single image rows)
+    "img_vicinity_map":            Mm(170),
+    "equipment_room_layout_img":   Mm(170),
+    "equipment_cable_routing_img": Mm(170),
+
+    # RS load schedules — REDUCED from 160 to 130 (they were too big)
+    "RS1_load_sched_img":          Mm(130),
+    "RS1_load_calc_img":           Mm(130),
+    "RS2_load_sched_img":          Mm(130),
+    "RS2_load_calc_img":           Mm(130),
+
+    # Half width (2-across table cells)
+    "img_site_photo_1":            Mm(85),
+    "img_site_photo_2":            Mm(85),
+    "img_site_photo_3":            Mm(85),
+    "img_site_photo_4":            Mm(85),
+    "img_olt_existing":            Mm(85),
+    "img_olt_proposed":            Mm(85),
+    "RS1_tapping_img":             Mm(85),
+    "RS2_tapping_img":             Mm(85),
+
+    # Third width (3-across table cells)
+    "transport_existing_1":        Mm(56),
+    "transport_existing_2":        Mm(56),
+    "transport_existing_3":        Mm(56),
+}
+
+
+# Target aspect ratios (width / height) per slot — for crop-to-fit
+TARGET_ASPECTS = {
+    # Full width
+    "img_vicinity_map":            1.70,
+    "RS1_load_sched_img":          1.70,
+    "RS1_load_calc_img":           1.70,
+    "RS2_load_sched_img":          1.70,
+    "RS2_load_calc_img":           1.70,
+    "equipment_room_layout_img":   1.10,
+    "equipment_cable_routing_img": 1.10,
+
+    # Half width
+    "img_site_photo_1":            1.40,
+    "img_site_photo_2":            1.40,
+    "img_site_photo_3":            1.40,
+    "img_site_photo_4":            1.40,
+    "img_olt_existing":            1.40,
+    "img_olt_proposed":            1.40,
+    "RS1_tapping_img":             1.40,
+    "RS2_tapping_img":             1.40,
+
+    # Third width
+    "transport_existing_1":        1.40,
+    "transport_existing_2":        1.40,
+    "transport_existing_3":        1.40,
+}
+
+
 def generate_nokia_tssr(
     template_path: str,
     output_path: str,
     context: dict,
     image_widths: dict | None = None,
 ) -> str:
-    """Render the Nokia template with the given context."""
+    """
+    Render the Nokia template with the given context.
+
+    Images are first cropped to match their target aspect ratio
+    (so they fill their cell edge-to-edge), then inserted at the
+    tuned width for that slot.
+    """
     doc = DocxTemplate(template_path)
 
-    DEFAULT_WIDTHS = {
-        "img_vicinity_map":            Mm(160),
-        "img_site_photo_1":            Mm(80),
-        "img_site_photo_2":            Mm(80),
-        "img_site_photo_3":            Mm(80),
-        "img_site_photo_4":            Mm(80),
-        "img_olt_existing":            Mm(80),
-        "img_olt_proposed":            Mm(80),
-        "RS1_load_sched_img":          Mm(160),
-        "RS1_load_calc_img":           Mm(160),
-        "RS2_load_sched_img":          Mm(160),
-        "RS2_load_calc_img":           Mm(160),
-        "RS1_tapping_img":             Mm(80),
-        "RS2_tapping_img":             Mm(80),
-        "equipment_room_layout_img":   Mm(170),
-        "equipment_cable_routing_img": Mm(170),
-        "transport_existing_1":        Mm(80),
-        "transport_existing_2":        Mm(80),
-        "transport_existing_3":        Mm(80),
-    }
-    widths = {**DEFAULT_WIDTHS, **(image_widths or {})}
+    # Merge caller overrides on top of defaults
+    widths = {**IMAGE_WIDTHS_MM, **(image_widths or {})}
+
+    # Directory for cropped-fitted images
+    fitted_dir = Path(output_path).parent / "_fitted"
 
     rendered = {}
     for key, val in context.items():
-        if isinstance(val, str) and val and Path(val).exists() and key in widths:
-            try:
+        # Only process string paths that exist and have a target width
+        if not (isinstance(val, str) and val and Path(val).exists() and key in widths):
+            rendered[key] = val
+            continue
+
+        try:
+            target_aspect = TARGET_ASPECTS.get(key)
+
+            if target_aspect:
+                # Crop the image to match the cell's aspect ratio
+                fitted_dir.mkdir(parents=True, exist_ok=True)
+                fitted_path = fitted_dir / f"{key}_fitted.jpg"
+                fit_image_to_aspect(val, str(fitted_path), target_aspect)
+                rendered[key] = InlineImage(doc, str(fitted_path), width=widths[key])
+            else:
+                # No aspect target — insert as-is
                 rendered[key] = InlineImage(doc, val, width=widths[key])
-                continue
-            except Exception:
-                pass
-        rendered[key] = val
+        except Exception as e:
+            print(f"[generate_nokia_tssr] Image render failed for {key}: {e}")
+            rendered[key] = val
 
     doc.render(rendered)
     doc.save(output_path)
