@@ -151,9 +151,18 @@ def render(ensure_workdir, persist) -> None:
         workdir = Path(ensure_workdir())
         out_xlsx = workdir / f"{sheet_name.replace(' ', '_')}_filled.xlsx"
 
+        # Inject site identity from the masterlist (used by M4 / M5).
+        site = st.session_state.get("site_data") or {}
+        payload = {
+            **data,
+            "SITE_NAME": site.get("site_name", ""),
+            "SITE_ID":   site.get("site_id", ""),
+        }
+
         with st.spinner("Filling template…"):
             try:
-                lcr.fill_template(str(TEMPLATE), str(out_xlsx), data, sheet_name)
+                lcr.fill_template(str(TEMPLATE), str(out_xlsx),
+                                  payload, sheet_name)
             except Exception as e:
                 st.error(f"❌ Fill failed: {e}")
                 st.exception(e)
