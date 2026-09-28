@@ -6,4 +6,4 @@ Pillow
 openpyxl
 pandas
 xlsx2html
-playwright
+playwright==1.49.0
