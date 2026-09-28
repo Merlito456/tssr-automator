@@ -31,11 +31,6 @@ RS_SHORT = {
     "RS4 — Rectifier 4": "RS4",
 }
 
-SLOT_BY_RS = {
-    "RS1 — Rectifier 1": "RS1_load_calc_img",
-    "RS2 — Rectifier 2": "RS2_load_calc_img",
-}
-
 
 def render(ensure_workdir, persist) -> None:
     """Two-arg entry point called from app.py."""
@@ -163,7 +158,7 @@ def render(ensure_workdir, persist) -> None:
                 lcr.render_sheet_png(str(out_xlsx), sheet_name, str(out_png))
             except Exception as e:
                 st.error(f"❌ Render failed: {e}")
-                st.info("Fallback: filled XLSX is still available.")
+                st.info("Fallback: the filled XLSX is still available.")
                 st.download_button(
                     "⬇️ Download filled XLSX",
                     data=Path(out_xlsx).read_bytes(),
@@ -173,18 +168,30 @@ def render(ensure_workdir, persist) -> None:
                 )
                 return
 
-        slot = SLOT_BY_RS.get(rs_label)
-        if slot:
-            st.session_state.image_map[slot] = str(out_png)
-            persist()
-            st.success(f"✅ Saved to slot `{slot}`")
-        else:
-            st.info(f"Rendered but {rs_label} has no Nokia slot — kept at `{out_png}`")
-
+        # ── No auto-assign to slot. Just show preview and offer downloads.
+        st.success(f"✅ Rendered `{rs_label}` — download below.")
         st.image(str(out_png), caption=f"{rs_label} — C7 block")
-        st.download_button(
-            "⬇️ Download PNG",
-            data=Path(out_png).read_bytes(),
-            file_name=out_png.name,
-            mime="image/png",
+
+        dcol1, dcol2 = st.columns(2)
+        with dcol1:
+            st.download_button(
+                "⬇️ Download PNG",
+                data=Path(out_png).read_bytes(),
+                file_name=out_png.name,
+                mime="image/png",
+                use_container_width=True,
+            )
+        with dcol2:
+            st.download_button(
+                "⬇️ Download filled XLSX",
+                data=Path(out_xlsx).read_bytes(),
+                file_name=out_xlsx.name,
+                mime=("application/vnd.openxmlformats-officedocument"
+                      ".spreadsheetml.sheet"),
+                use_container_width=True,
+            )
+
+        st.caption(
+            f"💡 To use this in the report, upload it in **Section 5 · Images** "
+            f"into the `{rs_label}` slot."
         )
