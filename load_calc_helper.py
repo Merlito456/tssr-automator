@@ -52,10 +52,29 @@ Fields:
 "modules_in_operation"     (int)
 "actual_float_voltage_v"   (float) volts
 
+BATTERY EXTRACTION HINTS:
+- Battery details (brand, model, voltage, capacity) are usually shown as
+  PHOTOS of the battery nameplate or sticker, not as typed text.
+- Look at the battery photos on pages 14, 15, 16, 17, and 18 of the TSSR.
+  These pages typically contain the Battery 1 and Battery 2 image gallery.
+- Read the manufacturer name and model number from the battery label
+  visible in those photos.
+- If Battery 1 and Battery 2 are documented separately, set "battery_banks"
+  to the total number of battery strings (e.g. 2 if two strings exist) and
+  "battery_capacity_ah" to the per-cell Ah rating shown on the label.
+- Common telecom battery brands: Enersys, C&D Technologies, East Penn,
+  Narada, Huawei, Leoch, and generic "VRLA" cells.
+- "battery_voltage" is the SYSTEM DC voltage (e.g. 48), which is usually
+  stated in the DC power section, not on the individual battery label.
+  Individual battery labels often show 12 V per block.
+
 Rules:
 1. Return ONLY the JSON object.
 2. Use exact numbers from the TSSR. If a value is missing, use 0 or "".
 3. Do NOT include a "proposed_loads" field.
+4. If the battery photos are illegible or you cannot confidently read the
+   brand, return the string "REVIEW_PHOTOS" for "battery_brand" instead of
+   guessing. The user will review the images manually.
 
 ═══════════════════════════════════════════════════════════════
 REQUIRED JSON SCHEMA
