@@ -2,6 +2,10 @@
 """
 Fill load_calculation.xlsx (C7 block) by writing to fixed cells.
 
+Two entry points:
+  - fill_template()      — one sheet, one file (legacy)
+  - fill_all_templates() — many sheets, one combined file (preferred)
+
 Only the sheets the user actually parsed are kept in the output.
 Any other computation sheets in the template are deleted.
 
@@ -56,23 +60,54 @@ def _safe_set(ws, row: int, col: int, value):
 
 
 # ─────────────────────────────────────────────────────────────
-# Template filler
+# Internal helpers
+# ─────────────────────────────────────────────────────────────
+
+def _build_values(data: dict, site_info: dict | None = None) -> dict:
+    """Compose the value dict for a single sheet."""
+    values = dict(data)
+    values.pop("proposed_loads", None)
+
+    if site_info:
+        values["SITE_NAME"] = site_info.get("site_name", "")
+        values["SITE_ID"]   = site_info.get("site_id", "")
+
+    # Derived: module_rating_a = W / system voltage
+    voltage = data.get("battery_voltage") or 48
+    values["module_rating_a"] = round(
+        (data.get("module_rating_w") or 0) / voltage, 2
+    )
+    return values
+
+
+def _is_computation_sheet(name: str) -> bool:
+    n = name.lower()
+    return n.startswith("rs") and "-computation" in n
+
+
+def _prune_unused(wb, keep_set: set[str]) -> list[str]:
+    """Delete computation sheets not in keep_set. Return names deleted."""
+    deleted = []
+    for name in list(wb.sheetnames):
+        if not _is_computation_sheet(name):
+            continue
+        if name in keep_set:
+            continue
+        del wb[name]
+        deleted.append(name)
+    return deleted
+
+
+# ─────────────────────────────────────────────────────────────
+# Entry point 1 — single sheet (legacy)
 # ─────────────────────────────────────────────────────────────
 
 def fill_template(template_path: str, out_path: str,
                   data: dict, sheet_name: str,
-                  keep_sheets: list[str] | None = None) -> str:
+                  keep_sheets: list[str] | None = None,
+                  site_info: dict | None = None) -> str:
     """
-    Copy the template to `out_path`, fill the target sheet, and then
-    delete every other computation sheet that isn't in `keep_sheets`.
-
-    Args:
-        template_path: source XLSX template
-        out_path: destination XLSX
-        data: dict of values to write (see CELL_MAP for keys)
-        sheet_name: the sheet to write into (e.g. "RS1-computation")
-        keep_sheets: list of computation sheets to preserve in the
-            output. If None, only `sheet_name` is kept.
+    Fill one sheet in the template and prune the rest.
     """
     shutil.copy(template_path, out_path)
     wb = load_workbook(out_path)
@@ -82,17 +117,9 @@ def fill_template(template_path: str, out_path: str,
             f"Sheet '{sheet_name}' not found. Available: {wb.sheetnames}"
         )
 
-    # ── Build the value dict
-    values = dict(data)
-    values.pop("proposed_loads", None)
-
-    voltage = data.get("battery_voltage") or 48
-    values["module_rating_a"] = round(
-        (data.get("module_rating_w") or 0) / voltage, 2
-    )
-
-    # ── Write each mapped cell
+    values = _build_values(data, site_info)
     ws = wb[sheet_name]
+
     written, missing = [], []
     for key, (row, col) in CELL_MAP.items():
         if key in values and values[key] not in (None, ""):
@@ -101,34 +128,83 @@ def fill_template(template_path: str, out_path: str,
         else:
             missing.append(key)
 
-    print(f"[fill_template] wrote {len(written)} cells to {sheet_name!r}: {written}")
+    print(f"[fill_template] wrote {len(written)} cells to {sheet_name!r}")
     if missing:
         print(f"[fill_template] ⚠ missing keys: {missing}")
 
-    # ── Decide which computation sheets to keep
     if keep_sheets is None:
         keep_sheets = [sheet_name]
-
-    # Never delete the current sheet, even if it's not in keep_sheets
     keep_set = set(keep_sheets) | {sheet_name}
 
-    # Only delete sheets that look like computation sheets. This
-    # preserves any non-RS sheets in the template (config, notes, etc.).
-    def _is_computation_sheet(name: str) -> bool:
-        n = name.lower()
-        return n.startswith("rs") and "-computation" in n
-
-    deleted = []
-    for name in list(wb.sheetnames):
-        if not _is_computation_sheet(name):
-            continue
-        if name in keep_set:
-            continue
-        del wb[name]
-        deleted.append(name)
-
+    deleted = _prune_unused(wb, keep_set)
     if deleted:
         print(f"[fill_template] deleted unused sheets: {deleted}")
 
+    wb.save(out_path)
+    return out_path
+
+
+# ─────────────────────────────────────────────────────────────
+# Entry point 2 — many sheets, one combined file
+# ─────────────────────────────────────────────────────────────
+
+def fill_all_templates(template_path: str, out_path: str,
+                       data_by_sheet: dict,
+                       keep_sheets: list[str] | None = None,
+                       site_info: dict | None = None) -> str:
+    """
+    Fill multiple RS sheets in a single output XLSX.
+
+    Args:
+        template_path: source XLSX template
+        out_path: destination XLSX
+        data_by_sheet: {sheet_name: values_dict}
+        keep_sheets: sheets to preserve. Defaults to data_by_sheet keys.
+        site_info: optional {"site_name": ..., "site_id": ...}
+
+    Returns:
+        out_path
+    """
+    if not data_by_sheet:
+        raise ValueError("No sheets to fill.")
+
+    shutil.copy(template_path, out_path)
+    wb = load_workbook(out_path)
+
+    missing_sheets = [s for s in data_by_sheet if s not in wb.sheetnames]
+    if missing_sheets:
+        raise ValueError(
+            f"Sheets not found in template: {missing_sheets}. "
+            f"Available: {wb.sheetnames}"
+        )
+
+    total_written = 0
+
+    for sheet_name, data in data_by_sheet.items():
+        ws = wb[sheet_name]
+        values = _build_values(data, site_info)
+
+        written, missing = [], []
+        for key, (row, col) in CELL_MAP.items():
+            if key in values and values[key] not in (None, ""):
+                _safe_set(ws, row, col, values[key])
+                written.append(key)
+            else:
+                missing.append(key)
+
+        total_written += len(written)
+        print(f"[fill_all] {sheet_name}: wrote {len(written)} cells")
+        if missing:
+            print(f"[fill_all] {sheet_name}: ⚠ missing {missing}")
+
+    if keep_sheets is None:
+        keep_sheets = list(data_by_sheet.keys())
+    keep_set = set(keep_sheets)
+
+    deleted = _prune_unused(wb, keep_set)
+    if deleted:
+        print(f"[fill_all] deleted unused sheets: {deleted}")
+
+    print(f"[fill_all] total cells written across all sheets: {total_written}")
     wb.save(out_path)
     return out_path
