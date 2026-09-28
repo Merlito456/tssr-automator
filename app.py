@@ -7,10 +7,11 @@ TSSR Automator v0.9
 - Ericsson TSSR PDF (image extraction)
 - Hardcoded work_permit + access_requirement from towerco rules
 - Map + Street View capture (no API key)
-- Persistent state across refresh
 - Image grid with blue/black status indicators
 - Real Ctrl+V paste via custom component
+- Fully isolated per-session — no cross-user interference
 """
+import os
 import shutil
 import tempfile
 import time
@@ -25,7 +26,7 @@ import core
 import ai_helper
 import state_manager as sm
 from excel_loader import SiteMasterlist
-from components.paste_image import paste_image, save_pasted_image   # ← UN-COMMENTED
+from components.paste_image import paste_image, save_pasted_image
 from permit_rules import get_permits_for_towerco
 
 
@@ -41,6 +42,15 @@ st.set_page_config(
 )
 
 
+# ── Diagnostic: identify this session in the shared log ──
+try:
+    _ctx = st.runtime.scriptrunner.get_script_run_ctx()
+    _sid = _ctx.session_id if _ctx else "unknown"
+except Exception:
+    _sid = "unknown"
+print(f"[startup] pid={os.getpid()} session={_sid} remote={sm._REMOTE}")
+
+
 DEFAULTS = {
     "workdir": None,
     "masterlist": None,
@@ -54,6 +64,7 @@ DEFAULTS = {
     "ai_applied": False,
     "load_calc_data": None,
     "load_calc_rs": "RS1 — Rectifier 1",
+    "_converting": False,
 }
 
 for k, v in DEFAULTS.items():
@@ -97,9 +108,10 @@ def reset_to_new_site():
 
 
 def ensure_workdir() -> Path:
-    workdir = Path(st.session_state.workdir or tempfile.mkdtemp(prefix="tssr_"))
-    st.session_state.workdir = str(workdir)
-    sm.save_workdir(str(workdir))
+    if not st.session_state.get("workdir"):
+        st.session_state.workdir = tempfile.mkdtemp(prefix="tssr_")
+    workdir = Path(st.session_state.workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
     return workdir
 
 
@@ -342,6 +354,12 @@ if site_id and site_id != st.session_state.selected_plaid:
         st.session_state.masterlist.get_site(site_id) or {}
     )
     st.session_state.ai_applied = False
+
+    # Reset any previously uploaded PDF for the prior site.
+    st.session_state["ericsson_docx"] = None
+    st.session_state["ericsson_images"] = []
+    st.session_state.pop("ericsson_pdf_upload", None)
+
     persist()
     st.rerun()
 
@@ -605,14 +623,6 @@ if st.session_state.site_data:
             **Option 3 — Satellite view**
             For a satellite view instead of the street map, use the
             **🗺️ Satellite view** link in the Street View tab.
-
-            ---
-
-            **Tips:**
-            - Street View coverage varies by region. Some remote sites
-              may not have Street View — use the satellite view instead.
-            - The static OSM map works best for rural areas.
-            - Google Maps often has higher-resolution imagery for urban sites.
             """)
 
         st.markdown("---")
@@ -686,21 +696,26 @@ if st.session_state.site_data:
             key="ericsson_pdf_upload",
         )
 
-        if uploaded_pdf:
-            workdir = ensure_workdir()
-            pdf_path = workdir / uploaded_pdf.name
-            pdf_path.write_bytes(uploaded_pdf.getbuffer())
+        # Lock out re-entry while a conversion is in progress.
+        if uploaded_pdf and not st.session_state.get("_converting"):
+            st.session_state["_converting"] = True
+            try:
+                workdir = ensure_workdir()
+                pdf_path = workdir / uploaded_pdf.name
+                pdf_path.write_bytes(uploaded_pdf.getbuffer())
 
-            with st.status("Converting PDF → DOCX…", expanded=True) as status:
-                t0 = time.time()
-                docx_path = core.pdf_to_docx(str(pdf_path), str(workdir))
-                st.write(f"✅ Converted in {time.time() - t0:.1f}s")
-                st.write("Extracting images…")
-                imgs = core.extract_images(docx_path, str(workdir / "images"))
-                st.session_state.ericsson_images = imgs
-                st.session_state.ericsson_docx = docx_path
-                st.write(f"✅ Found {len(imgs)} images")
-                status.update(label="Done", state="complete", expanded=False)
+                with st.status("Converting PDF → DOCX…", expanded=True) as status:
+                    t0 = time.time()
+                    docx_path = core.pdf_to_docx(str(pdf_path), str(workdir))
+                    st.write(f"✅ Converted in {time.time() - t0:.1f}s")
+                    st.write("Extracting images…")
+                    imgs = core.extract_images(docx_path, str(workdir / "images"))
+                    st.session_state.ericsson_images = imgs
+                    st.session_state.ericsson_docx = docx_path
+                    st.write(f"✅ Found {len(imgs)} images")
+                    status.update(label="Done", state="complete", expanded=False)
+            finally:
+                st.session_state["_converting"] = False
 
             persist()
             st.rerun()
@@ -893,6 +908,9 @@ with st.sidebar:
         st.success("Saved")
 
     with st.expander("🔍 Session info"):
+        st.write("**Session ID:**", _sid)
+        st.write("**PID:**", os.getpid())
+        st.write("**Remote:**", sm._REMOTE)
         st.write("**Workdir:**", st.session_state.workdir)
         st.write("**Selected PLAID:**", st.session_state.selected_plaid)
         st.write("**AI applied:**", st.session_state.get("ai_applied", False))
