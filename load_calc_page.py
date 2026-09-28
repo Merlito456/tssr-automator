@@ -24,10 +24,10 @@ import load_calc_render as lcr
 TEMPLATE = Path(__file__).parent / "data" / "load_calculation.xlsx"
 
 RS_OPTIONS = {
-    "RS1 — Rectifier 1":       "RS1-computation",
-    "RS2 — Rectifier 2":       "RS2-computation",
-    "RS3 — Rectifier 3":       "RS3-computation (existing)",
-    "RS4 — Rectifier 4":       "RS4-computation (existing)",
+    "RS1 — Rectifier 1": "RS1-computation",
+    "RS2 — Rectifier 2": "RS2-computation",
+    "RS3 — Rectifier 3": "RS3-computation (existing)",
+    "RS4 — Rectifier 4": "RS4-computation (existing)",
 }
 
 # Short labels used inside the AI prompt ("RS1", "RS2", ...)
