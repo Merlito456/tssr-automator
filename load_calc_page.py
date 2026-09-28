@@ -3,6 +3,13 @@
 Streamlit page: AI Load Calculator for RS1 / RS2 / RS3 / RS4.
 Called from app.py as:
     load_calc_page.render(ensure_workdir, persist)
+
+Workflow:
+  1. Pick rectifier (RS1..RS4)
+  2. Copy prompt → paste into AI → copy JSON back
+  3. Parse JSON & preview
+  4. Fill template → download the filled XLSX
+  5. Screenshot the C7 block in Excel and upload into Section 5
 """
 from __future__ import annotations
 
@@ -117,7 +124,7 @@ def render(ensure_workdir, persist) -> None:
                 persist()
                 st.rerun()
 
-    # 4) Preview + render
+    # 4) Preview + fill
     data = st.session_state.get("load_calc_data")
     if not data:
         return
@@ -136,14 +143,13 @@ def render(ensure_workdir, persist) -> None:
     st.write("**Computed**")
     st.json(comp)
 
-    if st.button("🖼 Render filled sheet → PNG",
+    # 5) Fill template → download XLSX
+    if st.button("📄 Fill template → download XLSX",
                  type="primary",
                  use_container_width=True,
-                 key="lc_render"):
+                 key="lc_fill"):
         workdir = Path(ensure_workdir())
-        out_xlsx = workdir / f"{sheet_name.replace(' ', '_')}.xlsx"
-        out_png = workdir / "uploads" / f"{sheet_name.replace(' ', '_')}.png"
-        out_png.parent.mkdir(parents=True, exist_ok=True)
+        out_xlsx = workdir / f"{sheet_name.replace(' ', '_')}_filled.xlsx"
 
         with st.spinner("Filling template…"):
             try:
@@ -153,45 +159,18 @@ def render(ensure_workdir, persist) -> None:
                 st.exception(e)
                 return
 
-        with st.spinner("Rendering PNG…"):
-            try:
-                lcr.render_sheet_png(str(out_xlsx), sheet_name, str(out_png))
-            except Exception as e:
-                st.error(f"❌ Render failed: {e}")
-                st.info("Fallback: the filled XLSX is still available.")
-                st.download_button(
-                    "⬇️ Download filled XLSX",
-                    data=Path(out_xlsx).read_bytes(),
-                    file_name=out_xlsx.name,
-                    mime=("application/vnd.openxmlformats-officedocument"
-                          ".spreadsheetml.sheet"),
-                )
-                return
-
-        # ── No auto-assign to slot. Just show preview and offer downloads.
-        st.success(f"✅ Rendered `{rs_label}` — download below.")
-        st.image(str(out_png), caption=f"{rs_label} — C7 block")
-
-        dcol1, dcol2 = st.columns(2)
-        with dcol1:
-            st.download_button(
-                "⬇️ Download PNG",
-                data=Path(out_png).read_bytes(),
-                file_name=out_png.name,
-                mime="image/png",
-                use_container_width=True,
-            )
-        with dcol2:
-            st.download_button(
-                "⬇️ Download filled XLSX",
-                data=Path(out_xlsx).read_bytes(),
-                file_name=out_xlsx.name,
-                mime=("application/vnd.openxmlformats-officedocument"
-                      ".spreadsheetml.sheet"),
-                use_container_width=True,
-            )
-
+        st.success(f"✅ Filled `{rs_label}` — download below.")
         st.caption(
-            f"💡 To use this in the report, upload it in **Section 5 · Images** "
-            f"into the `{rs_label}` slot."
+            "Open the file in Excel / LibreOffice / Google Sheets, then "
+            "screenshot the C7 block and upload it into the matching "
+            "image slot in **Section 5 · Images**."
+        )
+
+        st.download_button(
+            "⬇️ Download filled XLSX",
+            data=Path(out_xlsx).read_bytes(),
+            file_name=out_xlsx.name,
+            mime=("application/vnd.openxmlformats-officedocument"
+                  ".spreadsheetml.sheet"),
+            use_container_width=True,
         )
