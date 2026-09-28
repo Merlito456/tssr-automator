@@ -14,7 +14,7 @@ TSSR Automator v0.9
 import shutil
 import tempfile
 import time
-import traceback          # ← added for the diagnostic
+import traceback
 import urllib.request
 from pathlib import Path
 
@@ -25,7 +25,7 @@ import core
 import ai_helper
 import state_manager as sm
 from excel_loader import SiteMasterlist
-#from components.paste_image import paste_image, save_pasted_image
+from components.paste_image import paste_image, save_pasted_image   # ← UN-COMMENTED
 from permit_rules import get_permits_for_towerco
 
 
@@ -52,7 +52,6 @@ DEFAULTS = {
     "materials": {},
     "selected_plaid": "",
     "ai_applied": False,
-    # --- AI Load Calculator ---
     "load_calc_data": None,
     "load_calc_rs": "RS1 — Rectifier 1",
 }
@@ -114,7 +113,7 @@ def save_upload(uploaded_file) -> str:
 
 
 # ═════════════════════════════════════════════════════════════
-# Map helpers — no API key needed
+# Map helpers
 # ═════════════════════════════════════════════════════════════
 
 def _osm_embed_html(lat: str, lon: str, height: int = 450,
@@ -233,11 +232,12 @@ def image_dialog(slot: str, label: str, extracted: list[str]):
     elif method == "📋 Paste (Ctrl+V)":
         st.caption("**Click the dashed box below, then press Ctrl+V.**")
         result = paste_image(key=f"d_paste_{slot}")
-        if result:
+        if result and isinstance(result, dict) and result.get("base64"):
             cache_key = f"_pasted_{slot}_{result.get('size', 0)}"
             if cache_key not in st.session_state:
                 workdir = ensure_workdir()
-                ext = result["mime"].split("/")[-1].replace("jpeg", "jpg")
+                mime = result.get("mime", "image/png")
+                ext = mime.split("/")[-1].replace("jpeg", "jpg")
                 dest = workdir / "uploads" / f"{slot}_{int(time.time())}.{ext}"
                 save_pasted_image(result, str(dest))
                 st.session_state.image_map[slot] = str(dest)
@@ -452,33 +452,12 @@ if st.session_state.site_data:
 # ═════════════════════════════════════════════════════════════
 # STEP 3.2 — AI Load Calculator (C7 block)
 # ═════════════════════════════════════════════════════════════
-# DEBUGGING VERSION — prints the loaded module path and public names
-# so we can see why `load_calc_page.render` is missing.
 
 if st.session_state.site_data:
     st.divider()
-
     try:
-        import importlib
         import load_calc_page
-        importlib.reload(load_calc_page)
-
-        st.caption(
-            f"🔧 `load_calc_page` loaded from: "
-            f"`{getattr(load_calc_page, '__file__', '?')}`"
-        )
-        public = [x for x in dir(load_calc_page) if not x.startswith("_")]
-        st.caption(f"🔧 public names: `{public}`")
-
-        if not hasattr(load_calc_page, "render"):
-            st.error(
-                "❌ `load_calc_page` has no `render` function. "
-                "The file on the server is stale or wrong."
-            )
-            st.stop()
-
         load_calc_page.render(ensure_workdir, persist)
-
     except ImportError as e:
         st.warning(
             f"⚠️ Load calculator module not available: {e}\n\n"
