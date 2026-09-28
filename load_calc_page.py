@@ -8,9 +8,8 @@ Workflow:
   1. Pick rectifier (RS1..RS4)
   2. Copy prompt → paste into AI → copy JSON back
   3. Parse JSON & preview  (kept per-RS in session_state)
-  4. Fill template → download the filled XLSX
-     (only sheets the user actually parsed survive in the output)
-  5. Screenshot the C7 block in Excel and upload into Section 5
+  4. Fill & download ONE combined XLSX (only filled sheets kept)
+  5. Screenshot each C7 block and upload into Section 5
 """
 from __future__ import annotations
 
@@ -31,7 +30,6 @@ RS_OPTIONS = {
     "RS4 — Rectifier 4": "RS4-computation",
 }
 
-# Short labels used inside the AI prompt ("RS1", "RS2", ...)
 RS_SHORT = {
     "RS1 — Rectifier 1": "RS1",
     "RS2 — Rectifier 2": "RS2",
@@ -45,7 +43,6 @@ RS_SHORT = {
 # ─────────────────────────────────────────────────────────────
 
 def _store() -> dict:
-    """The dict of {rs_label: parsed_data}. Created on first use."""
     st.session_state.setdefault("load_calc_data_by_rs", {})
     return st.session_state["load_calc_data_by_rs"]
 
@@ -64,7 +61,6 @@ def _clear_for(rs_label: str) -> None:
 
 
 def render(ensure_workdir, persist) -> None:
-    """Two-arg entry point called from app.py."""
     st.subheader("⚡ AI Load Calculator (C7)")
 
     if not TEMPLATE.exists():
@@ -91,11 +87,11 @@ def render(ensure_workdir, persist) -> None:
     else:
         st.caption("No rectifier parsed yet.")
 
-    # 2) Prompt — customized so the AI extracts the right rectifier
+    # 2) Prompt
     with st.expander("📋 Step 1 — Copy this prompt", expanded=False):
         st.code(lch.build_prompt(rs_short), language="text")
 
-    # 3) Paste JSON — one textarea per RS (so switching RSs keeps content)
+    # 3) Paste JSON (per-RS textarea)
     with st.expander("📥 Step 2 — Paste AI JSON response", expanded=True):
         response = st.text_area(
             "Paste the AI's JSON here:",
@@ -117,7 +113,7 @@ def render(ensure_workdir, persist) -> None:
                     clean, warnings = lch.validate(parsed)
                     _set_for(rs_label, clean)
 
-                    # Push values into site_data so the DOCX gets them too.
+                    # Push into site_data for the DOCX too
                     site = dict(st.session_state.get("site_data") or {})
                     for k in (
                         "rectifier_brand", "max_modules", "module_rating_w",
@@ -159,61 +155,71 @@ def render(ensure_workdir, persist) -> None:
     data = _get_for(rs_label)
     if not data:
         st.info(f"No data parsed for {rs_short} yet.")
+    else:
+        st.divider()
+        st.markdown(f"### Preview — {rs_short}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("**Existing rectifier**")
+            st.json({k: v for k, v in data.items() if k != "proposed_loads"})
+        with col2:
+            st.write("**Proposed load (fixed)**")
+            st.json(data.get("proposed_loads", []))
+
+        comp = lch.compute_sufficiency(data)
+        st.write("**Computed**")
+        st.json(comp)
+
+    # 5) SINGLE Fill & download button — for ALL parsed RSs
+    if not stored:
         return
 
     st.divider()
-    st.markdown(f"### Preview — {rs_short}")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("**Existing rectifier**")
-        st.json({k: v for k, v in data.items() if k != "proposed_loads"})
-    with col2:
-        st.write("**Proposed load (fixed)**")
-        st.json(data.get("proposed_loads", []))
+    st.markdown("### Fill all parsed RSs into one XLSX")
 
-    comp = lch.compute_sufficiency(data)
-    st.write("**Computed**")
-    st.json(comp)
+    parsed_summary = ", ".join(
+        sorted(RS_SHORT.get(k, k) for k in stored)
+    )
+    st.caption(f"Sheets that will be written: {parsed_summary}")
 
-    # 5) Fill template → download XLSX (per-RS)
-    if st.button(f"📄 Fill {rs_short} template → download XLSX",
+    if st.button("📄 Fill all → download XLSX",
                  type="primary",
                  use_container_width=True,
-                 key=f"lc_fill_{rs_label}"):
+                 key="lc_fill_all"):
         workdir = Path(ensure_workdir())
-        out_xlsx = workdir / f"{sheet_name.replace(' ', '_')}_filled.xlsx"
+        out_xlsx = workdir / "load_calculation_filled.xlsx"
 
-        # Inject site identity from the masterlist (used by M4 / M5).
         site = st.session_state.get("site_data") or {}
-        payload = {
-            **data,
-            "SITE_NAME": site.get("site_name", ""),
-            "SITE_ID":   site.get("site_id", ""),
+        site_info = {
+            "site_name": site.get("site_name", ""),
+            "site_id":   site.get("site_id", ""),
         }
 
-        # Keep only RS sheets the user has actually parsed.
-        parsed_rs_labels = list(_store().keys())
-        keep = [RS_OPTIONS[lbl] for lbl in parsed_rs_labels
-                if lbl in RS_OPTIONS]
+        # Build {sheet_name: data}
+        data_by_sheet = {
+            RS_OPTIONS[lbl]: d
+            for lbl, d in stored.items()
+            if lbl in RS_OPTIONS
+        }
 
         with st.spinner("Filling template…"):
             try:
-                lcr.fill_template(
+                lcr.fill_all_templates(
                     str(TEMPLATE), str(out_xlsx),
-                    payload, sheet_name,
-                    keep_sheets=keep,
+                    data_by_sheet,
+                    keep_sheets=list(data_by_sheet.keys()),
+                    site_info=site_info,
                 )
             except Exception as e:
                 st.error(f"❌ Fill failed: {e}")
                 st.exception(e)
                 return
 
-        st.success(f"✅ Filled `{rs_label}` — download below.")
+        st.success(f"✅ Filled {len(data_by_sheet)} sheet(s) — download below.")
         st.caption(
-            f"Sheets kept: {', '.join(keep) or sheet_name}. "
-            "Open the file in Excel / LibreOffice / Google Sheets, "
-            "screenshot the C7 block, and upload it into the matching "
-            "image slot in **Section 5 · Images**."
+            "Open the file in Excel / LibreOffice / Google Sheets, screenshot "
+            "each C7 block, and upload them into the matching image slots in "
+            "**Section 5 · Images**."
         )
 
         st.download_button(
@@ -223,5 +229,4 @@ def render(ensure_workdir, persist) -> None:
             mime=("application/vnd.openxmlformats-officedocument"
                   ".spreadsheetml.sheet"),
             use_container_width=True,
-            key=f"lc_dl_{rs_label}",
         )
