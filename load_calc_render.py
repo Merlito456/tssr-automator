@@ -29,6 +29,7 @@ from load_calc_helper import compute_sufficiency, NOKIA_MF2_LOAD
 CELL_MAP = {
     "SITE_NAME":              (4,  13),   # M4
     "SITE_ID":                (5,  13),   # M5
+    "rectifier_brand":        (8,  25),   # Y8:AI8 (merged — anchor Y8)
     "max_modules":            (9,  31),   # AE9
     "module_rating_w":        (10, 25),   # Y10
     "module_rating_a":        (10, 31),   # AE10
