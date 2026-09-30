@@ -5,4 +5,3 @@ docxtpl
 Pillow
 openpyxl
 pandas
-xlsx2html
