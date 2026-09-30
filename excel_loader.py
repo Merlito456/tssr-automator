@@ -84,6 +84,23 @@ COLUMN_ALIASES = {
 }
 
 
+# Canonical Towerco tokens for classification
+GT_TOKENS = {"GT", "GLOBE", "GLOBE TELECOM", "GLOBE TELECOMS"}
+TOWERCO_TOKENS = {
+    "TCO", "TOWERCO", "TOWER CO", "TOWER COMPANY",
+    "FTAP", "PHILTOWER", "PHIL TOWER",
+    "EDGEPOINT", "EDGE POINT",
+    "SBA", "SBA TOWERS",
+    "MIESCOR", "MIES COR",
+    "ISOC", "ISOC EDGE",
+    "ALTUS", "ALTUS TOWER",
+    "ABOITIZ", "ABOITIZ TOWER",
+    "CREATIVE TOWER", "CREATIVE TOWERS",
+    "LCS", "LCS TOWER",
+    "TEC TOWER", "TECTower",
+}
+
+
 # =============================================================
 # Helpers
 # =============================================================
@@ -148,7 +165,6 @@ class SiteMasterlist:
         print(f"   Columns ({len(self.df.columns)}): {list(self.df.columns)}")
         print(f"   Mapped canonical fields: {list(self._col_map.keys())}")
 
-        # Warn on unmapped columns
         missing = [
             canon for canon in COLUMN_ALIASES
             if canon not in self._col_map
@@ -156,7 +172,6 @@ class SiteMasterlist:
         if missing:
             print(f"   WARN Unmapped fields: {missing}")
 
-        # Special check for towerco column
         if "towerco" not in self._col_map:
             print("   WARN Column N (TOWERCO) not found - "
                   "work_permit will be empty")
@@ -297,6 +312,11 @@ class SiteMasterlist:
             "roh":                self._value(row, "roh"),
         }
 
+    def get_towerco(self, plaid: str) -> str:
+        """Convenience: return only the Towerco value for a PLAID."""
+        site = self.get_site(plaid)
+        return site["towerco"] if site else ""
+
     def list_plaids(self) -> list[str]:
         """Return sorted list of all PLAIDs."""
         plaid_col = self._col_map.get("plaid")
@@ -400,7 +420,6 @@ if __name__ == "__main__":
     print(json.dumps(ml.debug_info(), indent=2, default=str))
 
     if len(sys.argv) >= 3:
-        plaid = sys.argv[3 - 2]  # or sys.argv[2]
         plaid = sys.argv[2]
         print(f"\n--- Looking up PLAID: {plaid} ---")
         site = ml.get_site(plaid)
