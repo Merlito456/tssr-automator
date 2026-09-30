@@ -1,6 +1,6 @@
 # app.py
 """
-TSSR Automator v1.0
+TSSR Automator v1.1
 - Excel masterlist (auto-loaded)
 - AI-assisted field extraction via Gemini/ChatGPT
 - AI-assisted load calculation (C7 block, RS1–RS4)
@@ -11,7 +11,40 @@ TSSR Automator v1.0
 - Image grid with blue/black status indicators
 - Real Ctrl+V paste via custom component
 - Fully isolated per-session — no cross-user interference
+
+v1.1 changes
+- Added sys.excepthook at top so import-time crashes print a traceback
+  to stderr BEFORE the process dies (Streamlit Cloud was silently
+  restarting the container without ever flushing the traceback).
+- Made towerco_resolver import optional (fallback stub) so a broken
+  resolver module can never hang the whole app.
+- Guarded sm._REMOTE with getattr() so a missing attribute in
+  state_manager cannot kill the app before the first render.
+- Guarded load_calc_page import.
 """
+
+# ═════════════════════════════════════════════════════════════
+# EARLY CRASH DETECTION
+# Must come before ANY other import so Streamlit Cloud flushes
+# import errors to stderr instead of silently restarting.
+# ═════════════════════════════════════════════════════════════
+import sys
+import traceback as _tb
+
+
+def _excepthook(exc_type, exc_value, exc_tb):
+    print("=" * 70, file=sys.stderr)
+    print("UNCAUGHT EXCEPTION AT IMPORT / STARTUP", file=sys.stderr)
+    _tb.print_exception(exc_type, exc_value, exc_tb, file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
+
+
+sys.excepthook = _excepthook
+
+
+# ═════════════════════════════════════════════════════════════
+# Standard imports
+# ═════════════════════════════════════════════════════════════
 import os
 import shutil
 import tempfile
@@ -23,14 +56,93 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-import core
-import ai_helper
-import state_manager as sm
-from excel_loader import SiteMasterlist
-from components.paste_image import paste_image, save_pasted_image
-from permit_rules import get_permits_for_towerco
-from towerco_resolver import resolve_site_owner, Action
+print(">>> base imports OK")
 
+
+# ═════════════════════════════════════════════════════════════
+# Project imports — each one isolated so a single failure
+# doesn't kill the whole app
+# ═════════════════════════════════════════════════════════════
+
+try:
+    import core
+    print(">>> core OK")
+except Exception as _e:
+    print(f">>> core FAILED: {_e}", file=sys.stderr)
+    _tb.print_exc()
+    raise
+
+try:
+    import ai_helper
+    print(">>> ai_helper OK")
+except Exception as _e:
+    print(f">>> ai_helper FAILED: {_e}", file=sys.stderr)
+    _tb.print_exc()
+    raise
+
+try:
+    import state_manager as sm
+    print(">>> state_manager OK")
+except Exception as _e:
+    print(f">>> state_manager FAILED: {_e}", file=sys.stderr)
+    _tb.print_exc()
+    raise
+
+try:
+    from excel_loader import SiteMasterlist
+    print(">>> excel_loader OK")
+except Exception as _e:
+    print(f">>> excel_loader FAILED: {_e}", file=sys.stderr)
+    _tb.print_exc()
+    raise
+
+try:
+    from components.paste_image import paste_image, save_pasted_image
+    print(">>> paste_image OK")
+except Exception as _e:
+    print(f">>> paste_image FAILED: {_e}", file=sys.stderr)
+    _tb.print_exc()
+    raise
+
+try:
+    from permit_rules import get_permits_for_towerco
+    print(">>> permit_rules OK")
+except Exception as _e:
+    print(f">>> permit_rules FAILED: {_e}", file=sys.stderr)
+    _tb.print_exc()
+    raise
+
+# --- Optional: towerco_resolver ---------------------------------
+try:
+    from towerco_resolver import resolve_site_owner, Action
+    _HAS_RESOLVER = True
+    print(">>> towerco_resolver OK")
+except Exception as _e:
+    print(f">>> towerco_resolver FAILED: {_e}", file=sys.stderr)
+    _tb.print_exc()
+    _HAS_RESOLVER = False
+
+    class Action:
+        MATCH         = "match"
+        VERIFY_FOLLOW = "verify_follow"
+        CALL_ROC      = "call_roc"
+
+    def resolve_site_owner(excel_value, tssr_value):
+        class _R:
+            excel_value  = excel_value
+            tssr_value   = tssr_value
+            excel_class  = "OTHER"
+            tssr_class   = "OTHER"
+            action       = Action.VERIFY_FOLLOW
+            final_owner  = tssr_value or excel_value
+            message      = f"towerco_resolver not available: {_e}"
+            needs_review = True
+        return _R()
+
+
+# ═════════════════════════════════════════════════════════════
+# Constants
+# ═════════════════════════════════════════════════════════════
 
 APP_DIR = Path(__file__).resolve().parent
 MASTERLIST_PATH = APP_DIR / "data" / "MINDANAO_Site_Activity_Monitoring_OLT_PROJECT.xlsx"
@@ -50,7 +162,9 @@ try:
     _sid = _ctx.session_id if _ctx else "unknown"
 except Exception:
     _sid = "unknown"
-print(f"[startup] pid={os.getpid()} session={_sid} remote={sm._REMOTE}")
+
+_REMOTE_SAFE = getattr(sm, "_REMOTE", "?")
+print(f"[startup] pid={os.getpid()} session={_sid} remote={_REMOTE_SAFE}")
 
 
 DEFAULTS = {
@@ -74,13 +188,16 @@ for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
 
 if "_restored" not in st.session_state:
-    saved = sm.load_state()
-    for k, v in saved.items():
-        if k in DEFAULTS:
-            st.session_state[k] = v
-    saved_workdir = sm.load_workdir()
-    if saved_workdir and Path(saved_workdir).exists():
-        st.session_state.workdir = saved_workdir
+    try:
+        saved = sm.load_state()
+        for k, v in saved.items():
+            if k in DEFAULTS:
+                st.session_state[k] = v
+        saved_workdir = sm.load_workdir()
+        if saved_workdir and Path(saved_workdir).exists():
+            st.session_state.workdir = saved_workdir
+    except Exception as e:
+        print(f"[startup] state restore failed: {e}")
     st.session_state["_restored"] = True
 
 
@@ -89,15 +206,21 @@ if "_restored" not in st.session_state:
 # ═════════════════════════════════════════════════════════════
 
 def persist():
-    sm.save_state(dict(st.session_state))
-    if st.session_state.workdir:
-        sm.save_workdir(st.session_state.workdir)
+    try:
+        sm.save_state(dict(st.session_state))
+        if st.session_state.workdir:
+            sm.save_workdir(st.session_state.workdir)
+    except Exception as e:
+        print(f"[persist] failed: {e}")
 
 
 def reset_to_new_site():
     if st.session_state.workdir and Path(st.session_state.workdir).exists():
         shutil.rmtree(st.session_state.workdir, ignore_errors=True)
-    sm.clear_state()
+    try:
+        sm.clear_state()
+    except Exception:
+        pass
     for k, v in DEFAULTS.items():
         if k == "masterlist":
             continue
@@ -130,17 +253,13 @@ def save_upload(uploaded_file) -> str:
 def _render_towerco_comparison(site: dict) -> dict:
     """
     Run the Excel-vs-TSSR Towerco resolver and return the result dict.
-
-    Writes the resolved owner back into st.session_state.site_data.
-    Caches the result in st.session_state["towerco_resolution"].
     """
-    excel_towerco = site.get("towerco", "")        # Column N
-    tssr_owner    = site.get("site_owner", "")      # from AI / TSSR
+    excel_towerco = site.get("towerco", "")
+    tssr_owner    = site.get("site_owner", "")
 
     try:
         resolution = resolve_site_owner(excel_towerco, tssr_owner)
     except Exception as e:
-        # Never let the resolver crash the whole app
         print(f"[towerco] resolver failed: {e}")
         result = {
             "excel":        excel_towerco,
@@ -451,7 +570,7 @@ if st.session_state.site_data:
 
 
 # ═════════════════════════════════════════════════════════════
-# STEP 3 — AI-Assisted Fields  (HARDENED)
+# STEP 3 — AI-Assisted Fields
 # ═════════════════════════════════════════════════════════════
 
 if st.session_state.site_data:
@@ -481,12 +600,10 @@ if st.session_state.site_data:
         "📥 Step 2 — Paste AI response",
         expanded=not st.session_state.get("ai_applied", False),
     ):
-        # Clear a stuck conversion flag that could freeze widgets
         if st.session_state.get("_converting"):
             st.warning("⚠️ A conversion was in progress. Clearing flag.")
             st.session_state["_converting"] = False
 
-        # If the prompt failed to build, tell the user clearly
         if not prompt_text:
             st.warning(
                 "Prompt couldn't be generated. Fix the prompt issue above "
@@ -1034,7 +1151,7 @@ with st.sidebar:
         "9. Generate & download"
     )
     st.markdown("---")
-    st.caption("v1.0 · Towerco reconciliation + hardened AI")
+    st.caption("v1.1 · Towerco reconciliation + hardened imports")
 
     if st.session_state.get("selected_plaid"):
         st.success(f"Working on: **{st.session_state.selected_plaid}**")
@@ -1046,7 +1163,7 @@ with st.sidebar:
     with st.expander("🔍 Session info"):
         st.write("**Session ID:**", _sid)
         st.write("**PID:**", os.getpid())
-        st.write("**Remote:**", sm._REMOTE)
+        st.write("**Remote:**", getattr(sm, "_REMOTE", "—"))
         st.write("**Workdir:**", st.session_state.workdir)
         st.write("**Selected PLAID:**", st.session_state.selected_plaid)
         st.write("**AI applied:**", st.session_state.get("ai_applied", False))
