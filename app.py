@@ -1,12 +1,12 @@
 # app.py
 """
-TSSR Automator v0.9
+TSSR Automator v1.0
 - Excel masterlist (auto-loaded)
 - AI-assisted field extraction via Gemini/ChatGPT
 - AI-assisted load calculation (C7 block, RS1–RS4)
 - Ericsson TSSR PDF (image extraction)
-- Hardcoded work_permit + access_requirement from towerco rules
 - Towerco reconciliation: Excel (Column N) vs TSSR Site Owner
+- Hardcoded work_permit + access_requirement from towerco rules
 - Map + Street View capture (no API key)
 - Image grid with blue/black status indicators
 - Real Ctrl+V paste via custom component
@@ -67,7 +67,7 @@ DEFAULTS = {
     "load_calc_data": None,
     "load_calc_rs": "RS1 — Rectifier 1",
     "_converting": False,
-    "towerco_resolution": {},   # NEW: cached resolver output
+    "towerco_resolution": {},
 }
 
 for k, v in DEFAULTS.items():
@@ -137,7 +137,23 @@ def _render_towerco_comparison(site: dict) -> dict:
     excel_towerco = site.get("towerco", "")        # Column N
     tssr_owner    = site.get("site_owner", "")      # from AI / TSSR
 
-    resolution = resolve_site_owner(excel_towerco, tssr_owner)
+    try:
+        resolution = resolve_site_owner(excel_towerco, tssr_owner)
+    except Exception as e:
+        # Never let the resolver crash the whole app
+        print(f"[towerco] resolver failed: {e}")
+        result = {
+            "excel":        excel_towerco,
+            "tssr":         tssr_owner,
+            "excel_class":  "OTHER",
+            "tssr_class":   "OTHER",
+            "action":       "verify_follow",
+            "final_owner":  tssr_owner or excel_towerco,
+            "message":      f"Resolver error: {e}",
+            "needs_review": True,
+        }
+        st.session_state["towerco_resolution"] = result
+        return result
 
     result = {
         "excel":        resolution.excel_value,
@@ -151,7 +167,6 @@ def _render_towerco_comparison(site: dict) -> dict:
     }
     st.session_state["towerco_resolution"] = result
 
-    # Write the resolved value back into the working site dict
     st.session_state.site_data["site_owner"] = resolution.final_owner
     st.session_state.site_data["towerco"]    = resolution.final_owner
 
@@ -389,12 +404,9 @@ if site_id and site_id != st.session_state.selected_plaid:
     )
     st.session_state.ai_applied = False
 
-    # Reset any previously uploaded PDF for the prior site.
     st.session_state["ericsson_docx"] = None
     st.session_state["ericsson_images"] = []
     st.session_state.pop("ericsson_pdf_upload", None)
-
-    # Reset cached towerco resolution
     st.session_state["towerco_resolution"] = {}
 
     persist()
@@ -403,10 +415,6 @@ if site_id and site_id != st.session_state.selected_plaid:
 if st.session_state.site_data:
     site = st.session_state.site_data
 
-    # --- Run the Towerco resolver ---
-    # Only runs meaningfully once the TSSR has provided site_owner.
-    # Before AI fields are applied, tssr_owner is typically "" so the
-    # resolver will return a "verify_follow" result — that's fine.
     resolution = _render_towerco_comparison(site)
 
     c1, c2, c3 = st.columns(3)
@@ -415,13 +423,13 @@ if st.session_state.site_data:
         st.text_input("Site Name", site.get("site_name", ""), disabled=True, key="disp_site_name")
     with c2:
         st.text_input("Region",  site.get("region", ""),   disabled=True, key="disp_region")
-        st.text_input("Towerco (Excel)", site.get("towerco_excel_raw", site.get("towerco", "")),
+        st.text_input("Towerco (Excel)",
+                      resolution.get("excel", ""),
                       disabled=True, key="disp_towerco_excel")
     with c3:
         st.text_input("FO Name",   site.get("fo_name", ""),   disabled=True, key="disp_fo_name")
         st.text_input("FO Mobile", site.get("fo_mobile", ""), disabled=True, key="disp_fo_mobile")
 
-    # --- Towerco comparison banner ---
     st.markdown("**Towerco reconciliation (Excel Column N vs TSSR Site Owner)**")
     m1, m2, m3 = st.columns(3)
     with m1:
@@ -443,7 +451,7 @@ if st.session_state.site_data:
 
 
 # ═════════════════════════════════════════════════════════════
-# STEP 3 — AI-Assisted Fields
+# STEP 3 — AI-Assisted Fields  (HARDENED)
 # ═════════════════════════════════════════════════════════════
 
 if st.session_state.site_data:
@@ -454,12 +462,37 @@ if st.session_state.site_data:
         "along with the Ericsson TSSR PDF, then paste the JSON response back."
     )
 
+    # ── Step 1: prompt ─────────────────────────────────────
     with st.expander("📋 Step 1 — Copy this prompt", expanded=False):
-        prompt_text = ai_helper.build_prompt()
-        st.code(prompt_text, language="text")
+        prompt_text = ""
+        try:
+            prompt_text = ai_helper.build_prompt()
+            st.code(prompt_text, language="text")
+        except Exception as e:
+            st.error(
+                f"❌ `ai_helper.build_prompt()` failed: "
+                f"{type(e).__name__}: {e}"
+            )
+            with st.expander("🔎 Traceback", expanded=True):
+                st.code(traceback.format_exc())
 
-    with st.expander("📥 Step 2 — Paste AI response",
-                     expanded=not st.session_state.get("ai_applied", False)):
+    # ── Step 2: paste response ─────────────────────────────
+    with st.expander(
+        "📥 Step 2 — Paste AI response",
+        expanded=not st.session_state.get("ai_applied", False),
+    ):
+        # Clear a stuck conversion flag that could freeze widgets
+        if st.session_state.get("_converting"):
+            st.warning("⚠️ A conversion was in progress. Clearing flag.")
+            st.session_state["_converting"] = False
+
+        # If the prompt failed to build, tell the user clearly
+        if not prompt_text:
+            st.warning(
+                "Prompt couldn't be generated. Fix the prompt issue above "
+                "before pasting a response."
+            )
+
         ai_response = st.text_area(
             "Paste the AI's JSON response here:",
             height=200,
@@ -469,40 +502,55 @@ if st.session_state.site_data:
 
         col_a, col_b = st.columns([1, 1])
         with col_a:
-            if st.button("✔ Apply AI fields", key="apply_ai",
-                         type="primary", use_container_width=True):
+            if st.button(
+                "✔ Apply AI fields",
+                key="apply_ai",
+                type="primary",
+                use_container_width=True,
+            ):
                 if not ai_response.strip():
                     st.warning("Paste a JSON response first.")
                 else:
-                    parsed = ai_helper.extract_json_from_response(ai_response)
-                    if not parsed:
-                        st.error("❌ Could not parse JSON from the response.")
-                    else:
-                        clean, warnings = ai_helper.validate_and_normalize(parsed)
-                        merged = core.merge_ai_fields(
-                            st.session_state.site_data, clean
-                        )
-                        st.session_state.site_data = merged
-                        st.session_state["ai_applied"] = True
-
-                        # Re-run the Towerco resolver now that the TSSR
-                        # site_owner value is present.
-                        _render_towerco_comparison(st.session_state.site_data)
-
-                        persist()
-
-                        if warnings:
-                            st.warning(
-                                f"⚠️ Applied with {len(warnings)} warnings:\n\n"
-                                + "\n".join(f"- {w}" for w in warnings)
+                    try:
+                        parsed = ai_helper.extract_json_from_response(ai_response)
+                        if not parsed:
+                            st.error("❌ Could not parse JSON from the response.")
+                        else:
+                            clean, warnings = ai_helper.validate_and_normalize(parsed)
+                            merged = core.merge_ai_fields(
+                                st.session_state.site_data, clean
                             )
-                        st.success("✅ AI fields applied")
-                        st.rerun()
+                            st.session_state.site_data = merged
+                            st.session_state["ai_applied"] = True
+
+                            _render_towerco_comparison(st.session_state.site_data)
+
+                            persist()
+
+                            if warnings:
+                                st.warning(
+                                    f"⚠️ Applied with {len(warnings)} warnings:\n\n"
+                                    + "\n".join(f"- {w}" for w in warnings)
+                                )
+                            st.success("✅ AI fields applied")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(
+                            f"❌ Apply failed: {type(e).__name__}: {e}"
+                        )
+                        with st.expander("🔎 Traceback", expanded=True):
+                            st.code(traceback.format_exc())
 
         with col_b:
-            if st.button("🗑 Clear response", key="clear_ai",
-                         use_container_width=True):
+            if st.button(
+                "🗑 Clear response",
+                key="clear_ai",
+                use_container_width=True,
+            ):
                 st.session_state.pop("ai_json_input", None)
+                for k in list(st.session_state.keys()):
+                    if k.startswith("ai_json_input"):
+                        del st.session_state[k]
                 st.rerun()
 
     if st.session_state.get("ai_applied"):
@@ -512,11 +560,16 @@ if st.session_state.site_data:
         site = st.session_state.site_data
         res  = st.session_state.get("towerco_resolution", {})
 
-        # Permits derive from the FINAL resolved owner
         towerco_for_permits = (
             res.get("final_owner") or site.get("towerco", "")
         )
-        permits = get_permits_for_towerco(towerco_for_permits)
+        try:
+            permits = get_permits_for_towerco(towerco_for_permits)
+        except Exception as e:
+            permits = {
+                "work_permit": f"ERROR: {e}",
+                "access_requirement": f"ERROR: {e}",
+            }
 
         display_fields = [
             ("Site Class",        site.get("site_class", "")),
@@ -776,7 +829,6 @@ if st.session_state.site_data:
             key="ericsson_pdf_upload",
         )
 
-        # Lock out re-entry while a conversion is in progress.
         if uploaded_pdf and not st.session_state.get("_converting"):
             st.session_state["_converting"] = True
             try:
@@ -794,6 +846,10 @@ if st.session_state.site_data:
                     st.session_state.ericsson_docx = docx_path
                     st.write(f"✅ Found {len(imgs)} images")
                     status.update(label="Done", state="complete", expanded=False)
+            except Exception as e:
+                st.error(f"❌ PDF conversion failed: {type(e).__name__}: {e}")
+                with st.expander("🔎 Traceback", expanded=True):
+                    st.code(traceback.format_exc())
             finally:
                 st.session_state["_converting"] = False
 
@@ -978,7 +1034,7 @@ with st.sidebar:
         "9. Generate & download"
     )
     st.markdown("---")
-    st.caption("v0.9 · AI load calculator + Towerco reconciliation")
+    st.caption("v1.0 · Towerco reconciliation + hardened AI")
 
     if st.session_state.get("selected_plaid"):
         st.success(f"Working on: **{st.session_state.selected_plaid}**")
@@ -1008,3 +1064,17 @@ with st.sidebar:
         st.write("**Towerco Action:**", res.get("action", "—"))
         st.write("**Towerco Final:**",  res.get("final_owner", "—"))
         st.write("**Towerco Review:**", res.get("needs_review", False))
+
+    with st.expander("🧹 Debug / reset"):
+        if st.button("Delete ai_json_input", key="dbg_del_ai"):
+            st.session_state.pop("ai_json_input", None)
+            st.rerun()
+        if st.button("Clear _converting", key="dbg_clr_conv"):
+            st.session_state["_converting"] = False
+            st.rerun()
+        if st.button("Clear ai_applied", key="dbg_clr_applied"):
+            st.session_state["ai_applied"] = False
+            st.rerun()
+        if st.button("Clear towerco_resolution", key="dbg_clr_twr"):
+            st.session_state["towerco_resolution"] = {}
+            st.rerun()
