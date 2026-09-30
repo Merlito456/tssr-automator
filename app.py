@@ -6,6 +6,7 @@ TSSR Automator v0.9
 - AI-assisted load calculation (C7 block, RS1–RS4)
 - Ericsson TSSR PDF (image extraction)
 - Hardcoded work_permit + access_requirement from towerco rules
+- Towerco reconciliation: Excel (Column N) vs TSSR Site Owner
 - Map + Street View capture (no API key)
 - Image grid with blue/black status indicators
 - Real Ctrl+V paste via custom component
@@ -28,6 +29,7 @@ import state_manager as sm
 from excel_loader import SiteMasterlist
 from components.paste_image import paste_image, save_pasted_image
 from permit_rules import get_permits_for_towerco
+from towerco_resolver import resolve_site_owner, Action
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -65,6 +67,7 @@ DEFAULTS = {
     "load_calc_data": None,
     "load_calc_rs": "RS1 — Rectifier 1",
     "_converting": False,
+    "towerco_resolution": {},   # NEW: cached resolver output
 }
 
 for k, v in DEFAULTS.items():
@@ -122,6 +125,37 @@ def save_upload(uploaded_file) -> str:
     dest = uploads / uploaded_file.name
     dest.write_bytes(uploaded_file.getbuffer())
     return str(dest)
+
+
+def _render_towerco_comparison(site: dict) -> dict:
+    """
+    Run the Excel-vs-TSSR Towerco resolver and return the result dict.
+
+    Writes the resolved owner back into st.session_state.site_data.
+    Caches the result in st.session_state["towerco_resolution"].
+    """
+    excel_towerco = site.get("towerco", "")        # Column N
+    tssr_owner    = site.get("site_owner", "")      # from AI / TSSR
+
+    resolution = resolve_site_owner(excel_towerco, tssr_owner)
+
+    result = {
+        "excel":        resolution.excel_value,
+        "tssr":         resolution.tssr_value,
+        "excel_class":  resolution.excel_class,
+        "tssr_class":   resolution.tssr_class,
+        "action":       resolution.action.value,
+        "final_owner":  resolution.final_owner,
+        "message":      resolution.message,
+        "needs_review": resolution.needs_review,
+    }
+    st.session_state["towerco_resolution"] = result
+
+    # Write the resolved value back into the working site dict
+    st.session_state.site_data["site_owner"] = resolution.final_owner
+    st.session_state.site_data["towerco"]    = resolution.final_owner
+
+    return result
 
 
 # ═════════════════════════════════════════════════════════════
@@ -326,7 +360,7 @@ else:
 
 
 # ═════════════════════════════════════════════════════════════
-# STEP 2 — Select Site
+# STEP 2 — Select Site + Towerco comparison
 # ═════════════════════════════════════════════════════════════
 
 st.divider()
@@ -360,21 +394,52 @@ if site_id and site_id != st.session_state.selected_plaid:
     st.session_state["ericsson_images"] = []
     st.session_state.pop("ericsson_pdf_upload", None)
 
+    # Reset cached towerco resolution
+    st.session_state["towerco_resolution"] = {}
+
     persist()
     st.rerun()
 
 if st.session_state.site_data:
     site = st.session_state.site_data
+
+    # --- Run the Towerco resolver ---
+    # Only runs meaningfully once the TSSR has provided site_owner.
+    # Before AI fields are applied, tssr_owner is typically "" so the
+    # resolver will return a "verify_follow" result — that's fine.
+    resolution = _render_towerco_comparison(site)
+
     c1, c2, c3 = st.columns(3)
     with c1:
         st.text_input("Site ID",   site.get("site_id", ""),   disabled=True, key="disp_site_id")
         st.text_input("Site Name", site.get("site_name", ""), disabled=True, key="disp_site_name")
     with c2:
-        st.text_input("Region",    site.get("region", ""),    disabled=True, key="disp_region")
-        st.text_input("Towerco",   site.get("towerco", ""),   disabled=True, key="disp_towerco")
+        st.text_input("Region",  site.get("region", ""),   disabled=True, key="disp_region")
+        st.text_input("Towerco (Excel)", site.get("towerco_excel_raw", site.get("towerco", "")),
+                      disabled=True, key="disp_towerco_excel")
     with c3:
         st.text_input("FO Name",   site.get("fo_name", ""),   disabled=True, key="disp_fo_name")
         st.text_input("FO Mobile", site.get("fo_mobile", ""), disabled=True, key="disp_fo_mobile")
+
+    # --- Towerco comparison banner ---
+    st.markdown("**Towerco reconciliation (Excel Column N vs TSSR Site Owner)**")
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.metric("Excel", resolution["excel"] or "—")
+    with m2:
+        st.metric("TSSR",  resolution["tssr"]  or "—")
+    with m3:
+        st.metric("Final Owner", resolution["final_owner"] or "—")
+
+    action = resolution["action"]
+    if action == Action.CALL_ROC.value:
+        st.error(f"🚨 **CALL ROC.** {resolution['message']}")
+    elif action == Action.VERIFY_FOLLOW.value:
+        st.warning(f"⚠️ **Verify with user.** {resolution['message']}")
+    elif action == Action.MATCH.value:
+        st.success(f"✅ {resolution['message']}")
+    else:
+        st.info(f"ℹ️ {resolution['message']}")
 
 
 # ═════════════════════════════════════════════════════════════
@@ -419,6 +484,11 @@ if st.session_state.site_data:
                         )
                         st.session_state.site_data = merged
                         st.session_state["ai_applied"] = True
+
+                        # Re-run the Towerco resolver now that the TSSR
+                        # site_owner value is present.
+                        _render_towerco_comparison(st.session_state.site_data)
+
                         persist()
 
                         if warnings:
@@ -440,8 +510,13 @@ if st.session_state.site_data:
 
     with st.expander("🔍 Preview merged site data", expanded=False):
         site = st.session_state.site_data
-        towerco_value = site.get("towerco", "")
-        permits = get_permits_for_towerco(towerco_value)
+        res  = st.session_state.get("towerco_resolution", {})
+
+        # Permits derive from the FINAL resolved owner
+        towerco_for_permits = (
+            res.get("final_owner") or site.get("towerco", "")
+        )
+        permits = get_permits_for_towerco(towerco_for_permits)
 
         display_fields = [
             ("Site Class",        site.get("site_class", "")),
@@ -451,15 +526,20 @@ if st.session_state.site_data:
             ("Hauling Remarks",   site.get("hauling_remarks", "")),
             ("Site Profile",      site.get("site_profile", "")),
             ("Site Key Location", site.get("site_key_location", "")),
-            ("Site Owner",        site.get("site_owner", "")),
             ("Site Security",     site.get("site_security", "")),
             ("Site Type",         site.get("site_type", "")),
             ("Site Accessible",   site.get("site_accessible", "")),
             ("No. of Bridge",     site.get("no_bridge", "")),
             ("Foot Trail",        site.get("foot_trail", "")),
+            ("— TOWERCO RECONCILIATION —", ""),
+            ("Towerco (Excel)",   res.get("excel", "")),
+            ("Site Owner (TSSR)", res.get("tssr", "")),
+            ("Site Owner (Final)",res.get("final_owner", "")),
+            ("Towerco Action",    res.get("action", "")),
+            ("Towerco Message",   res.get("message", "")),
             ("— DERIVED FROM TOWERCO —", ""),
-            ("Work Permit",        permits["work_permit"]),
-            ("Access Requirement", permits["access_requirement"]),
+            ("Work Permit",       permits["work_permit"]),
+            ("Access Requirement",permits["access_requirement"]),
         ]
 
         for label, val in display_fields:
@@ -898,7 +978,7 @@ with st.sidebar:
         "9. Generate & download"
     )
     st.markdown("---")
-    st.caption("v0.9 · AI load calculator")
+    st.caption("v0.9 · AI load calculator + Towerco reconciliation")
 
     if st.session_state.get("selected_plaid"):
         st.success(f"Working on: **{st.session_state.selected_plaid}**")
@@ -919,3 +999,12 @@ with st.sidebar:
         st.write("**Images set:**", len(st.session_state.image_map))
         st.write("**Materials set:**", len(st.session_state.materials))
         st.write("**Extracted imgs:**", len(st.session_state.ericsson_images))
+
+        res = st.session_state.get("towerco_resolution", {})
+        st.markdown("---")
+        st.write("**Towerco Excel:**",  res.get("excel", "—"))
+        st.write("**Towerco TSSR:**",   res.get("tssr", "—"))
+        st.write("**Towerco Class:**",  f"{res.get('excel_class','—')} / {res.get('tssr_class','—')}")
+        st.write("**Towerco Action:**", res.get("action", "—"))
+        st.write("**Towerco Final:**",  res.get("final_owner", "—"))
+        st.write("**Towerco Review:**", res.get("needs_review", False))
